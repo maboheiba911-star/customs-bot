@@ -1,6 +1,7 @@
 """Telegram message texts (HTML parse mode)."""
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from html import escape
 
 from .calc import CalcResult
@@ -23,9 +24,20 @@ def short(text: str, n: int = 90) -> str:
     return t if len(t) <= n else t[: n - 1].rstrip() + "…"
 
 
+def local_day(ts: str | None) -> str:
+    """UTC timestamp (2026-11-10T22:30:00Z) -> the date on this computer's clock (Egypt on the owner's PC)."""
+    if not ts:
+        return ""
+    try:
+        t = datetime.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return ts[:10]
+    return t.astimezone().strftime("%Y-%m-%d")
+
+
 def source_line(item: TariffItem, snapshot: str | None) -> str:
     if item.source == "live" and item.fetched_at:
-        return f"🕒 المصدر: موقع مصلحة الجمارك (مباشر) — {item.fetched_at[:10]}"
+        return f"🕒 المصدر: موقع مصلحة الجمارك (مباشر) — {local_day(item.fetched_at)}"
     snap = f" — نسخة {snapshot}" if snapshot else ""
     return f"🕒 المصدر: نسخة محلية من تعريفة مصلحة الجمارك{snap}"
 

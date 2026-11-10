@@ -84,3 +84,18 @@ def test_development_fee_override():
     r = calculate(taxes("8703233090"), 500_000, dev_fee_pct=3)
     assert r.amount("dev") == pytest.approx(0.03 * 700_000)      # (value + duty) x 3%
     assert r.amount("vat") == pytest.approx(0.14 * (700_000 + 21_000 + 7_000))
+
+
+def test_dates_follow_the_local_clock(monkeypatch):
+    import time
+
+    from customs_bot.formatters import local_day
+    monkeypatch.setenv("TZ", "EET-2")             # Egypt winter time, UTC+2
+    time.tzset()
+    try:
+        assert local_day("2026-11-10T22:30:00Z") == "2026-11-11"     # 00:30 in Cairo is already the 11th
+        assert local_day("2026-11-10T21:59:59Z") == "2026-11-10"
+        assert local_day("") == "" and local_day("garbage") == "garbage"[:10]
+    finally:
+        monkeypatch.delenv("TZ")
+        time.tzset()

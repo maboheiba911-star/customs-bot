@@ -61,15 +61,7 @@ async def fetch_customs_rates(base_url: str, transport: httpx.AsyncBaseTransport
     return rates
 
 
-def _local_day(ts: str | None) -> str:
-    """UTC stamp (…Z) -> the date on this computer's clock (Egypt time on the owner's PC)."""
-    if not ts:
-        return ""
-    try:
-        t = datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-    except ValueError:
-        return ts[:10]
-    return t.astimezone().strftime("%Y-%m-%d")
+_local_day = fmt.local_day          # UTC stamp -> local date (Egypt on the owner's PC)
 
 
 def _hours_since(ts: str | None) -> float | None:
@@ -163,7 +155,7 @@ class CustomsService:
         if got:
             rec, ts = got
             return local, parse_instructions(rec.get("Instructions"), rec.get("InstructionCodes"), "export"), \
-                f"موقع مصلحة الجمارك (مباشر) — {ts[:10]}"
+                f"موقع مصلحة الجمارك (مباشر) — {_local_day(ts)}"
         if local is None:
             return None, [], ""
         return local, self.ref.instructions(local.export_codes), f"نسخة محلية — {self.snapshot or ''}"
@@ -422,7 +414,7 @@ class CustomsService:
         cur = currency.upper()
         manual = self.app.get_fx(cur)
         if manual and manual[0] > 0:
-            return manual[0], f"سعر يدوي مسجل {manual[1][:10]}"
+            return manual[0], f"سعر يدوي مسجل {_local_day(manual[1])}"
         await self.refresh_customs_rates(max_age_hours=12)
         rates, ts = self.customs_rates()
         age = _hours_since(ts)
@@ -431,7 +423,7 @@ class CustomsService:
         await self.refresh_cbe(max_age_hours=24)
         row = self.app.get_auto_fx(cur)
         if row and row["sell"]:
-            return row["sell"], f"سعر بيع البنك المركزي {row['rate_date'] or row['fetched_at'][:10]}"
+            return row["sell"], f"سعر بيع البنك المركزي {row['rate_date'] or _local_day(row['fetched_at'])}"
         if rates.get(cur) and ts:      # both sources down: an older customs rate, clearly dated
             return rates[cur], f"⚠️ آخر سعر تحويل جمركي متاح ({_local_day(ts)}) — راجعه"
         return None, ""
@@ -455,13 +447,13 @@ class CustomsService:
             lines.append(" • ".join(f"{c} <b>{customs[c]:g}</b>" for c in shown))
         if auto:
             any_row = next(iter(auto.values()))
-            lines.append(f"🏦 البنك المركزي — {any_row['rate_date'] or any_row['fetched_at'][:10]} (شراء / بيع):")
+            lines.append(f"🏦 البنك المركزي — {any_row['rate_date'] or _local_day(any_row['fetched_at'])} (شراء / بيع):")
             for cur in ("USD", "EUR", "GBP", "SAR", "AED", "CNY", "KWD", "CHF", "JPY"):
                 if cur in auto:
                     r = auto[cur]
                     lines.append(f"• {cur}: {r['buy']:.4f} / <b>{r['sell']:.4f}</b>")
         for cur, r in manual.items():
-            lines.append(f"✍️ {cur}: {r['rate']:g} (سعر يدوي من {r['updated_at'][:10]} — بيتقدم على المركزي)")
+            lines.append(f"✍️ {cur}: {r['rate']:g} (سعر يدوي من {_local_day(r['updated_at'])} — بيتقدم على الرسمي)")
         lines.append("ℹ️ الحساب بيستخدم سعر التحويل الجمركي، ولو مش متاح سعر بيع البنك المركزي. "
                      "النهائي حسب يوم تسجيل البيان.")
         return "\n".join(lines)
