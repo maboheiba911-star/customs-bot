@@ -1,0 +1,3 @@
+# Windows batch files stay CRLF byte-for-byte (the self-updater copies them as-is)
+*.bat -text
+*.py text eol=lf

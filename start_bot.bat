@@ -1,0 +1,6 @@
+@echo off
+cd /d "%~dp0"
+if not exist ".venv\Scripts\pythonw.exe" ( echo Run install_windows.bat first. & pause & exit /b 1 )
+start "" ".venv\Scripts\pythonw.exe" bot.py
+echo Bot started in the background. Log: data\bot.log
+timeout /t 3 >nul

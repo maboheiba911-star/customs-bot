@@ -1,0 +1,15 @@
+.env
+__pycache__/
+*.pyc
+.pytest_cache/
+data/app.db*
+data/*.bak
+data/*.upload
+data/tariff_raw.json
+data/reference-*.db
+data/bot_state.pickle
+data/*
+!data/.gitkeep
+.venv/
+project_docs/
+*.zip

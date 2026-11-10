@@ -1,0 +1,20 @@
+{
+  "_readme": "إعدادات الحساب. أي مفتاح بيبدأ بـ _ مجرد ملاحظة. غيّر القيم وأعد تشغيل البوت.",
+  "calc": {
+    "_vat_default_pct": "سعر القيمة المضافة العام لما البند ميكونش ليه سعر خاص في التعريفة",
+    "vat_default_pct": 14,
+    "_income_tax_advance_pct": "دفعة تحت حساب ضريبة الأرباح التجارية والصناعية اللي بتحصلها الجمارك (0 لإلغائها)",
+    "income_tax_advance_pct": 1,
+    "income_tax_base": "value",
+    "_bases": "value = القيمة الجمركية فقط | value+duty = القيمة + ضريبة الوارد",
+    "dev_fee_base": "value+duty",
+    "table_tax_base": "value+duty",
+    "fees_base": "value",
+    "_vat_base_includes": "مكونات وعاء القيمة المضافة غير القيمة نفسها: duty, dev, table, health, chambers",
+    "vat_base_includes": ["duty", "dev", "table", "health", "chambers"]
+  },
+  "development_fee_by_hs_prefix": {
+    "_example": "رسم تنمية الموارد مش منشور على موقع الجمارك؛ أضفه هنا لو بندك عليه رسم، مثال: \"870321\": 3",
+    "_note": "أو من البوت بأمر الأدمن: /devfee 870321 3"
+  }
+}

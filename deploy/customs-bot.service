@@ -1,0 +1,16 @@
+# systemd unit — انسخه إلى /etc/systemd/system/customs-bot.service
+# ثم: sudo systemctl daemon-reload && sudo systemctl enable --now customs-bot
+[Unit]
+Description=Egyptian customs Telegram bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=bot
+WorkingDirectory=/home/bot/customs-bot
+ExecStart=/home/bot/customs-bot/.venv/bin/python bot.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
