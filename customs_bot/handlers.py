@@ -36,6 +36,7 @@ from telegram.ext import (
 
 from . import builder, router
 from . import formatters as fmt
+from .agreements import BLOCS, COUNTRIES, resolve_country
 from .appdb import iso, parse_iso, utcnow
 from .official import crawl_tariff
 from .service import CustomsService, Reply
@@ -46,7 +47,9 @@ log = logging.getLogger(__name__)
 BTN_SEARCH, BTN_CALC, BTN_GS1, BTN_FX, BTN_HELP = (
     "🔎 بحث عن بند", "🧮 حساب الجمارك", "🧱 تصنيف GS1", "💱 أسعار الصرف", "❓ المساعدة",
 )
-MENU = ReplyKeyboardMarkup([[BTN_SEARCH, BTN_CALC], [BTN_GS1, BTN_FX], [BTN_HELP]], resize_keyboard=True)
+BTN_ORIGIN = "🌍 الاتفاقيات والمنشأ"
+MENU = ReplyKeyboardMarkup([[BTN_SEARCH, BTN_CALC], [BTN_ORIGIN], [BTN_GS1, BTN_FX], [BTN_HELP]],
+                           resize_keyboard=True)
 MODE_PROMPTS = {
     BTN_SEARCH: ("hs", "🔎 ابعت اسم المنتج (عربي أو إنجليزي) أو رقم البند."),
     BTN_CALC: ("calc", "🧮 ابعت رقم البند + القيمة CIF بالجنيه.\nمثال: <code>0713330090 250000</code>\n"
@@ -204,6 +207,19 @@ async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await handle_text(update, context, "تصدير " + text)
 
 
+async def cmd_origin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = " ".join(context.args or [])
+    if not text:
+        context.user_data.pop("mode", None)
+        await send(update, context, svc(context).origin_menu())
+        return
+    await handle_text(update, context, "منشأ " + text)
+
+
+async def cmd_agreements(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await send(update, context, svc(context).agreements_reply(" ".join(context.args or [])))
+
+
 async def cmd_gs1(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = " ".join(context.args or [])
     if not text:
@@ -230,9 +246,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text: 
     if text in MODE_PROMPTS:
         mode, prompt = MODE_PROMPTS[text]
         ud["mode"] = mode
+        ud["origin"] = None
         if mode != "calc":
             ud.pop("pending_code", None)
         await send(update, context, Reply(prompt))
+        return
+    if text == BTN_ORIGIN:
+        ud.pop("mode", None)
+        await send(update, context, s.origin_menu())
         return
     if text == BTN_FX:
         await send(update, context, Reply(await s.fx_text()))
@@ -240,6 +261,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text: 
     if text == BTN_HELP:
         await cmd_help(update, context)
         return
+
+    st = ud.get("origin")
+    if forced_mode is None and isinstance(st, dict) and st.get("await"):
+        reply = await _origin_followup(s, ud, st, text)
+        if reply is not None:
+            _track(update, context, "origin", text)
+            await send(update, context, reply)
+            return
 
     mode = forced_mode or ud.get("mode")
     intent = router.parse(text, mode=mode, pending_code=ud.get("pending_code"))
@@ -265,6 +294,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text: 
             reply = await s.details(intent.code)
     elif intent.kind == "export":
         reply = await s.export_view(intent.code)
+    elif intent.kind in ("origin", "import_from", "export_to", "agreement"):
+        ud.pop("mode", None)
+        reply = await s.origin_intent(intent)
     elif intent.kind == "gpc":
         reply = s.gpc_search(intent.query)
     elif intent.kind == "gpc_code":
@@ -274,6 +306,45 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text: 
     else:
         reply = Reply("ابعت اسم منتج أو رقم بند. /help للمساعدة.")
     await send(update, context, reply)
+
+
+async def _origin_followup(s: CustomsService, ud: dict, st: dict, text: str) -> Reply | None:
+    """The answer to an origin question (which product? which country?). None = handle normally."""
+    if st["await"] == "country":
+        iso = resolve_country(text)
+        if iso:
+            ud["origin"] = {**st, "await": None}
+            if st.get("dir") == "e":
+                return await s.export_to(st.get("code", ""), iso)
+            return await s.import_from(st.get("code", ""), iso, st.get("value"), qty=st.get("qty"),
+                                       personal=st.get("personal", False))
+        if re.sub(r"[\s/.\-]", "", text).isdigit() or len(text.split()) > 4:
+            ud["origin"] = None          # a new code or a sentence: not an answer to the question
+            return None
+        return s.country_not_found(text, st)
+    if st["await"] == "code":
+        ud["origin"] = {**st, "await": None}
+        intent = router.parse(text)
+        direction = st.get("dir", "i")
+        if intent.kind in ("code", "calc") and intent.code:
+            if direction == "e":
+                return s.ask_country("e", intent.code)
+            return await s.best_origin(intent.code, intent.value if intent.kind == "calc" else None)
+        if intent.kind == "search" and intent.query:
+            return s.origin_search(intent.query, direction)
+    return None
+
+
+def _num(text: str) -> float | None:
+    try:
+        v = float(text)
+    except (TypeError, ValueError):
+        return None
+    return v if v > 0 else None
+
+
+def _iso(text: str) -> str | None:
+    return text if text in COUNTRIES or text in BLOCS else None
 
 
 # ---------------------------------------------------------------- callbacks
@@ -314,7 +385,41 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             return
         await send(update, context, await s.calculate_code(
             arg, pending["value"], currency_note=pending.get("currency_note"), qty=pending.get("qty"),
-            origin=pending.get("origin"), personal=pending.get("personal", False)))
+            origin=pending.get("origin"), personal=pending.get("personal", False), country=pending.get("country")))
+    elif action.startswith("o"):
+        await _origin_callback(update, context, s, ud, action, arg)
+
+
+async def _origin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, s: CustomsService, ud: dict,
+                           action: str, arg: str) -> None:
+    parts = arg.split("|")
+    code = re.sub(r"\D", "", parts[0]) if parts else ""
+    st = ud.get("origin") if isinstance(ud.get("origin"), dict) else {}
+    same = st.get("code") == code
+    qty, personal = (st.get("qty"), st.get("personal", False)) if same else (None, False)
+    reply: Reply | None = None
+    if action == "od":
+        reply = s.origin_menu(code)
+    elif action == "oo":
+        reply = s.ask_product("e" if arg == "e" else "i")
+    elif action == "oi":
+        reply = await s.best_origin(code, _num(parts[1]) if len(parts) > 1 else None, qty=qty, personal=personal)
+    elif action == "oe":
+        reply = s.ask_country("e", code)
+    elif action == "oq" and len(parts) >= 2:
+        direction = "e" if parts[0] == "e" else "i"
+        reply = s.ask_country(direction, re.sub(r"\D", "", parts[1]), _num(parts[2]) if len(parts) > 2 else None)
+    elif action == "oc" and len(parts) >= 2 and _iso(parts[1]):
+        reply = await s.import_from(code, parts[1], _num(parts[2]) if len(parts) > 2 else None,
+                                    qty=qty, personal=personal)
+    elif action == "ox" and len(parts) >= 2 and _iso(parts[1]):
+        reply = await s.export_to(code, parts[1])
+    elif action == "ol":
+        reply = s.agreements_reply()
+    elif action == "oa":
+        reply = s.agreement_card(arg)
+    if reply is not None:
+        await send(update, context, reply)
 
 
 # ------------------------------------------------------------------- admin
@@ -819,11 +924,11 @@ def _stop_application(application: Application) -> None:
     application.stop_running()
 
 
-async def _notify_admins(application: Application, text: str) -> None:
+async def _notify_admins(application: Application, text: str, reply_markup=None) -> None:
     s: CustomsService = application.bot_data["svc"]
     for admin in s.admins():
         try:
-            await application.bot.send_message(admin, text, parse_mode=ParseMode.HTML)
+            await application.bot.send_message(admin, text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
         except Exception:
             log.warning("could not notify admin %s", admin)
 
@@ -853,8 +958,8 @@ async def _announce_result(application: Application) -> None:
             res = _read_json(path, {})
             path.unlink(missing_ok=True)
             text = _result_text(res) if isinstance(res, dict) else None
-            if text:
-                await _notify_admins(application, text)
+            if text:   # the menu keyboard too, so buttons added by the update show up right away
+                await _notify_admins(application, text, MENU if res.get("status") in ("ok", "restarted") else None)
             return
         await asyncio.sleep(5)
 
@@ -1291,6 +1396,8 @@ def register(app: Application) -> None:
     app.add_handler(CommandHandler("calc", cmd_calc))
     app.add_handler(CommandHandler("gs1", cmd_gs1))
     app.add_handler(CommandHandler("export", cmd_export))
+    app.add_handler(CommandHandler("origin", cmd_origin))
+    app.add_handler(CommandHandler("agreements", cmd_agreements))
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("setfx", cmd_setfx))
     app.add_handler(CommandHandler("devfee", cmd_devfee))

@@ -65,7 +65,8 @@ def build_application(settings=None, *, builder: ApplicationBuilder | None = Non
         application.bot_data["svc"] = service      # bot_data must always carry the service
         await application.bot.set_my_commands([
             ("start", "ابدأ"), ("help", "طريقة الاستخدام"), ("hs", "بحث عن بند"),
-            ("calc", "حساب الجمارك"), ("export", "متطلبات التصدير"), ("gs1", "تصنيف GS1"),
+            ("calc", "حساب الجمارك"), ("origin", "المنشأ والاتفاقيات"), ("export", "متطلبات التصدير"),
+            ("agreements", "اتفاقيات مصر التجارية"), ("gs1", "تصنيف GS1"),
             ("fx", "أسعار الصرف"), ("about", "مصادر البيانات"), ("version", "نسخة البوت والتحديث"),
         ])
         # plain asyncio tasks (not application.create_task) so stopping the bot never waits on them
@@ -126,6 +127,11 @@ def selftest() -> int:
             assert "إجمالي" in r.text, r.text[:300]
             r = await svc.calculate(router.parse("0713330090 1000$ @50"))
             assert "50,000" in r.text, r.text[:300]
+            r = await svc.origin_intent(router.parse("منشأ 1905320000"))          # origin & agreements
+            assert "21,750" in r.text, r.text[:300]
+            r = await svc.origin_intent(router.parse("تصدير 0713330090 لتركيا"))
+            assert "EUR.1" in r.text, r.text[:300]
+            assert "oa|eu" in str(svc.agreements_reply().keyboard.to_dict())
         finally:
             await svc.live.close()
 

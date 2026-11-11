@@ -13,8 +13,12 @@ import httpx
 from telegram import InlineKeyboardButton as Btn
 from telegram import InlineKeyboardMarkup
 
+from . import agreements as agr
 from . import formatters as fmt
+from . import origin as origin_mod
 from .appdb import AppDB
+from html import escape as html_escape
+
 from .arabic import classification_hint, is_arabic
 from .builder import parse_instructions
 from .calc import calculate
@@ -197,7 +201,8 @@ class CustomsService:
             snapshot=self.snapshot, nafeza_url=self.s.nafeza_url, dev_fee=self.dev_fee_for(code),
         )
         kb = InlineKeyboardMarkup([
-            [Btn("🧮 احسب الجمارك", callback_data=f"k|{code}")],
+            [Btn("🧮 احسب الجمارك", callback_data=f"k|{code}"),
+             Btn("🌍 المنشأ والاتفاقيات", callback_data=f"od|{code}")],
             [Btn("📤 متطلبات التصدير", callback_data=f"x|{code}"), Btn("📋 اشتراطات الاستيراد", callback_data=f"i|{code}")],
             [Btn("🧱 GS1 مقترح", callback_data=f"g|{code}")],
         ])
@@ -216,7 +221,8 @@ class CustomsService:
         item, instr, source = await self.export_requirements(code)
         if item is None:
             return Reply(f"❌ البند <code>{code}</code> مش موجود في التعريفة.")
-        kb = InlineKeyboardMarkup([[Btn("📦 تفاصيل البند", callback_data=f"d|{code}"),
+        kb = InlineKeyboardMarkup([[Btn("🌐 تصدير لبلد معيّن", callback_data=f"oe|{code}")],
+                                   [Btn("📦 تفاصيل البند", callback_data=f"d|{code}"),
                                     Btn("🧱 GS1 مقترح", callback_data=f"g|{code}")]])
         return Reply(fmt.export_text(item, instr, source, self.ref.hs_desc(code)), kb)
 
@@ -292,25 +298,282 @@ class CustomsService:
             return Reply(fmt.choose_line_text(intent.code, options[:8], value), InlineKeyboardMarkup(rows),
                          state={"pending_calc": {"value": value, "currency_note": currency_note,
                                                  "qty": intent.qty, "origin": intent.origin,
-                                                 "personal": intent.personal}})
+                                                 "personal": intent.personal, "country": intent.country}})
         return await self.calculate_code(code, value, currency_note=currency_note, qty=intent.qty,
-                                         origin=intent.origin, personal=intent.personal)
+                                         origin=intent.origin, personal=intent.personal, country=intent.country)
+
+    # agreement words in a calculation -> the country / bloc the origin module ranks
+    ORIGIN_COUNTRY = {"eu": "EU", "uk": "GB", "tr": "TR", "efta": "EFTA", "mercosur": "MERCOSUR"}
 
     async def calculate_code(self, code: str, value: float, *, currency_note: str | None = None,
-                             qty: dict | None = None, origin: str | None = None, personal: bool = False) -> Reply:
-        item, _ = await self.item(code)
+                             qty: dict | None = None, origin: str | None = None, personal: bool = False,
+                             country: str | None = None) -> Reply:
+        item, instr = await self.item(code)
         if item is None:
             return Reply(f"❌ البند <code>{code}</code> مش موجود.")
-        origin_key = origin
-        if origin == "afcfta":
-            ag = next((a for a in item.parsed.agreements if a.key.startswith("afcfta")), None)
-            origin_key = ag.key if ag else "afcfta_b"
-        res = calculate(item.parsed, value, code=code, settings=self.s.calc, qty=qty, origin=origin_key,
-                        dev_fee_pct=self.dev_fee_for(code), personal=personal)
+        iso = country or self.ORIGIN_COUNTRY.get(origin or "")
+        if iso:
+            an = origin_mod.price(origin_mod.analyze(item.parsed, instr, live=item.source == "live"), item.parsed,
+                                  value, code=code, settings=self.s.calc, qty=qty, dev_fee=self.dev_fee_for(code),
+                                  personal=personal)
+            best = an.best_for(iso)
+            if best is not None and best.res is not None:
+                res = best.res
+                res.warnings.insert(0, origin_mod.cert_note(best))
+                if best.status == "rule":
+                    res.warnings.insert(1, "الإعفاء ده قاعدة عامة للاتفاقية — يتأكد للبند مع المستخلص.")
+                if best.quota:
+                    res.warnings.append("التخفيض في حدود حصة سنوية — بعد الحصة بالسعر العام.")
+            else:
+                res = an.general_res
+                res.warnings.append(origin_mod.no_preference_reason(an, iso))
+            if origin_mod.measure_lines(an, iso):
+                res.warnings.append(f"فيه إجراءات خاصة على منشأ {agr.country_name(iso)} — "
+                                    "شوف زرار «🌍 أفضل منشأ».")
+        else:
+            origin_key = origin
+            if origin == "afcfta":
+                ag = next((a for a in item.parsed.agreements if a.key.startswith("afcfta")), None)
+                origin_key = ag.key if ag else "afcfta_b"
+            res = calculate(item.parsed, value, code=code, settings=self.s.calc, qty=qty, origin=origin_key,
+                            dev_fee_pct=self.dev_fee_for(code), personal=personal)
         text = fmt.calc_text(item, res, currency_note=currency_note, snapshot=self.snapshot)
         kb = InlineKeyboardMarkup([[Btn("📦 تفاصيل البند", callback_data=f"d|{code}"),
-                                    Btn("🔁 قيمة تانية", callback_data=f"k|{code}")]])
+                                    Btn("🔁 قيمة تانية", callback_data=f"k|{code}")],
+                                   [Btn("🌍 أفضل منشأ بنفس القيمة", callback_data=f"oi|{code}|{int(round(value))}")]])
         return Reply(text, kb, state={"pending_code": code})
+
+    # ------------------------------------------------------------ origin & agreements
+    IMPORT_QUICK = ("CN", "TR", "EU", "IN", "SA", "AE", "US", "GB", "BR")
+    EXPORT_QUICK = ("SA", "AE", "EU", "GB", "TR", "SD", "LY", "US", "CN")
+
+    async def _value_egp(self, intent: Intent) -> tuple[float | None, str | None, Reply | None]:
+        """The value of an origin request in EGP (converted when sent in another currency)."""
+        if intent.value is None:
+            return None, None, None
+        if intent.value <= 0:
+            return None, None, Reply("ابعت قيمة أكبر من صفر.")
+        if intent.currency and intent.currency != "EGP":
+            rate, when = (intent.fx, "سعر مكتوب في الرسالة") if intent.fx else await self.rate_for(intent.currency)
+            if not rate:
+                return None, None, Reply(f"💱 مش قادر أجيب سعر {intent.currency} دلوقتي — اكتب السعر في الرسالة، "
+                                         f"مثال: <code>منشأ {intent.code or 'البند'} 5000$ @50.5</code>")
+            return intent.value * rate, f"{fmt.money(intent.value)} {intent.currency} × {rate:g} — {when}", None
+        return intent.value, None, None
+
+    async def origin_intent(self, intent: Intent) -> Reply:
+        """One-line origin commands: منشأ / استيراد ... من / تصدير ... إلى / اتفاقيات."""
+        if intent.kind == "agreement":
+            return self.agreements_reply(intent.query)
+        if intent.kind == "export_to":
+            if intent.code:
+                return await self.export_to(intent.code, intent.country)
+            return self.origin_search(intent.query, "e", intent.country)
+        value, note, err = await self._value_egp(intent)
+        if err is not None:
+            return err
+        if intent.kind == "import_from":
+            if intent.code:
+                return await self.import_from(intent.code, intent.country, value, currency_note=note,
+                                              qty=intent.qty, personal=intent.personal)
+            return self.origin_search(intent.query, "i", intent.country)
+        if intent.code:
+            return await self.best_origin(intent.code, value, currency_note=note, qty=intent.qty,
+                                          personal=intent.personal)
+        if intent.query:
+            return self.origin_search(intent.query, "i")
+        return self.origin_menu()
+
+    def origin_menu(self, code: str | None = None) -> Reply:
+        if code:
+            item = self.ref.get(code)
+            kb = [[Btn("📥 استيراد لمصر", callback_data=f"oi|{code}"), Btn("📤 تصدير من مصر", callback_data=f"oe|{code}")],
+                  [Btn("📚 الاتفاقيات", callback_data="ol")]]
+            return Reply(origin_mod.menu_text(code, item.desc_ar if item else None), InlineKeyboardMarkup(kb),
+                         state={"origin": None})
+        kb = [[Btn("📥 استيراد لمصر", callback_data="oo|i"), Btn("📤 تصدير من مصر", callback_data="oo|e")],
+              [Btn("📚 مكتبة الاتفاقيات", callback_data="ol")]]
+        return Reply(origin_mod.menu_text(), InlineKeyboardMarkup(kb), state={"origin": None})
+
+    def ask_product(self, direction: str) -> Reply:
+        what = "هتستورده" if direction == "i" else "هتصدّره"
+        return Reply(f"{'📥' if direction == 'i' else '📤'} ابعت رقم البند أو اسم المنتج اللي {what}.\n"
+                     "مثال: <code>1905320000</code> أو <code>بسكويت</code>",
+                     state={"origin": {"dir": direction, "await": "code"}})
+
+    def ask_country(self, direction: str, code: str, value: float | None = None) -> Reply:
+        code = re.sub(r"\D", "", code)
+        v = f"|{int(round(value))}" if value else ""
+        quick = self.IMPORT_QUICK if direction == "i" else self.EXPORT_QUICK
+        action = "oc" if direction == "i" else "ox"
+        buttons = [Btn(f"{agr.country_flag(c)} {agr.country_name(c)}",
+                       callback_data=f"{action}|{code}|{c}{v if direction == 'i' else ''}") for c in quick]
+        rows = [buttons[i: i + 3] for i in range(0, len(buttons), 3)]
+        q = (f"🌐 هتستورد البند <code>{code}</code> من أنهي بلد؟" if direction == "i"
+             else f"🌐 هتصدّر البند <code>{code}</code> لأنهي بلد؟")
+        return Reply(q + "\nاختار من الزراير أو اكتب اسم البلد (مثال: ألمانيا، كينيا، اليابان).",
+                     InlineKeyboardMarkup(rows),
+                     state={"origin": {"dir": direction, "code": code, "value": value, "await": "country"}})
+
+    def country_not_found(self, text: str, st: dict) -> Reply:
+        r = self.ask_country(st.get("dir", "i"), st.get("code", ""), st.get("value"))
+        r.text = f"مش لاقي بلد اسمها «{html_escape(text[:40])}».\n" + r.text
+        return r
+
+    def _pick_line(self, code: str, action: str, suffix: str = "") -> tuple[str | None, Reply | None]:
+        """A full tariff line, or a reply asking to choose one under a heading."""
+        code = re.sub(r"\D", "", code or "")
+        if len(code) < 2:
+            return None, Reply("ابعت رقم البند (10 أرقام) أو أوله على الأقل.")
+        line, options = self._resolve_calc_code(code)
+        if line is not None:
+            return line, None
+        if not options:
+            return None, Reply(f"❌ البند <code>{code}</code> مش موجود في التعريفة.")
+        rows, row = [], []
+        for i, it in enumerate(options[:8], 1):
+            row.append(Btn(f"{i}) {it.code}", callback_data=f"{action}|{it.code}{suffix}"))
+            if len(row) == 2:
+                rows.append(row)
+                row = []
+        if row:
+            rows.append(row)
+        lines = [f"البند <code>{code}</code> تحته أكتر من بند تفصيلي — اختار البند:", ""]
+        for i, it in enumerate(options[:8], 1):
+            lines.append(f"{i}) <code>{it.code}</code> {html_escape(fmt.short(it.short_ar, 70))}\n    {fmt.rates_inline(it)}")
+        return None, Reply("\n".join(lines), InlineKeyboardMarkup(rows))
+
+    async def _analysis(self, line: str, value: float | None, qty: dict | None, personal: bool):
+        item, instr = await self.item(line)
+        if item is None:
+            return None, None
+        an = origin_mod.analyze(item.parsed, instr, live=item.source == "live")
+        origin_mod.price(an, item.parsed, value or origin_mod.DEFAULT_VALUE, code=line, settings=self.s.calc,
+                         qty=qty, dev_fee=self.dev_fee_for(line), personal=personal)
+        return item, an
+
+    async def best_origin(self, code: str, value: float | None = None, *, currency_note: str | None = None,
+                          qty: dict | None = None, personal: bool = False) -> Reply:
+        v = f"|{int(round(value))}" if value else ""
+        line, ask = self._pick_line(code, "oi", v)
+        if ask is not None:
+            return ask
+        item, an = await self._analysis(line, value, qty, personal)
+        if item is None:
+            return Reply(f"❌ البند <code>{line}</code> مش موجود.")
+        text = origin_mod.rank_text(item, an, source=fmt.source_line(item, self.snapshot), currency_note=currency_note)
+        targets = [Btn(lbl, callback_data=f"oc|{line}|{iso}{v}") for lbl, iso in origin_mod.rank_targets(an)]
+        rows = [targets[i: i + 3] for i in range(0, len(targets), 3)]
+        rows.append([Btn("🌐 من بلد معيّن", callback_data=f"oq|i|{line}{v}"),
+                     Btn("📤 تصدير البند", callback_data=f"oe|{line}")])
+        rows.append([Btn("📦 تفاصيل البند", callback_data=f"d|{line}"), Btn("📚 الاتفاقيات", callback_data="ol")])
+        return Reply(text, InlineKeyboardMarkup(rows),
+                     state={"origin": {"dir": "i", "code": line, "value": value, "qty": qty, "personal": personal},
+                            "last_code": line})
+
+    async def import_from(self, code: str, iso: str, value: float | None = None, *,
+                          currency_note: str | None = None, qty: dict | None = None, personal: bool = False) -> Reply:
+        if iso not in agr.COUNTRIES and iso not in agr.BLOCS:
+            return Reply("مش عارف البلد دي — اكتب اسمها بالعربي.")
+        v = f"|{int(round(value))}" if value else ""
+        line, ask = self._pick_line(code, "oc", f"|{iso}{v}")
+        if ask is not None:
+            return ask
+        item, an = await self._analysis(line, value, qty, personal)
+        if item is None:
+            return Reply(f"❌ البند <code>{line}</code> مش موجود.")
+        text = origin_mod.import_card(item, an, iso, source=fmt.source_line(item, self.snapshot),
+                                      currency_note=currency_note)
+        rows = [[Btn("🏆 أفضل منشأ", callback_data=f"oi|{line}{v}"), Btn("🌐 بلد تاني", callback_data=f"oq|i|{line}{v}")],
+                [Btn("📦 تفاصيل البند", callback_data=f"d|{line}")]]
+        return Reply(text, InlineKeyboardMarkup(rows),
+                     state={"origin": {"dir": "i", "code": line, "value": value, "qty": qty, "personal": personal},
+                            "last_code": line})
+
+    async def export_to(self, code: str, iso: str) -> Reply:
+        if iso not in agr.COUNTRIES and iso not in agr.BLOCS:
+            return Reply("مش عارف البلد دي — اكتب اسمها بالعربي.")
+        line, ask = self._pick_line(code, "ox", f"|{iso}")
+        if ask is not None:
+            return ask
+        item, instr, source = await self.export_requirements(line)
+        if item is None:
+            item, _ = await self.item(line)
+        if item is None:
+            return Reply(f"❌ البند <code>{line}</code> مش موجود في التعريفة.")
+        text = origin_mod.export_card(item, instr, source or fmt.source_line(item, self.snapshot), iso)
+        rows = [[Btn("🌐 بلد تاني", callback_data=f"oq|e|{line}"), Btn("📥 الاستيراد", callback_data=f"oi|{line}")]]
+        ags = agr.agreements_for(iso, direction="export")
+        last = [Btn("📦 تفاصيل البند", callback_data=f"d|{line}")]
+        if ags:
+            last.append(Btn(f"📚 {origin_mod.plain_agreement(ags[0].key)}", callback_data=f"oa|{ags[0].key}"))
+        rows.append(last)
+        return Reply(text, InlineKeyboardMarkup(rows),
+                     state={"origin": {"dir": "e", "code": line}, "last_code": line})
+
+    def origin_search(self, query: str, direction: str, iso: str | None = None) -> Reply:
+        items, total = self.ref.search(query, PAGE, 0)
+        h = classification_hint(query)
+        hint = h[1] if h else None
+        if h and total < 3:
+            extra, _ = self.ref.by_prefix(h[0], PAGE, 0)
+            seen = {i.code for i in items}
+            items = items + [e for e in extra if e.code not in seen]
+            total = len(items)
+        state = {"origin": {"dir": direction, "await": "code"} if not items else None}
+        if not items:
+            return Reply(fmt.search_results(query, [], 0, 0, hint), state=state)
+        if iso:
+            action, suffix = ("oc" if direction == "i" else "ox"), f"|{iso}"
+        else:
+            action, suffix = ("oi" if direction == "i" else "oe"), ""
+        rows, row = [], []
+        for i, it in enumerate(items[:PAGE], 1):
+            row.append(Btn(f"{i}) {it.code}", callback_data=f"{action}|{it.code}{suffix}"))
+            if len(row) == 2:
+                rows.append(row)
+                row = []
+        if row:
+            rows.append(row)
+        text = fmt.search_results(query, items[:PAGE], total, 0, hint)
+        where = ""
+        if iso:
+            where = (f" من {agr.country_name(iso)}" if direction == "i" else f" إلى {agr.country_name(iso)}")
+        doing = "الاستيراد" if direction == "i" else "التصدير"
+        text = text.replace("اضغط رقم البند للتفاصيل، أو ابعت: <code>البند القيمة</code> للحساب.",
+                            f"اضغط رقم البند علشان أكمّل {doing}{html_escape(where)}.")
+        return Reply(text, InlineKeyboardMarkup(rows), state=state)
+
+    def agreements_reply(self, query: str = "") -> Reply:
+        q = (query or "").strip()
+        bloc_key = {"EU": "eu", "EFTA": "efta", "MERCOSUR": "mercosur"}
+        if q:
+            iso = agr.resolve_country(q)
+            if iso in bloc_key:
+                return self.agreement_card(bloc_key[iso])
+            if iso:
+                return Reply(origin_mod.country_text(iso))
+            ag = agr.resolve_agreement(q)
+            if ag is not None:
+                return self.agreement_card(ag.key)
+        rows, row = [], []
+        for key in origin_mod.LIBRARY:
+            row.append(Btn(agr.short_name(key), callback_data=f"oa|{key}"))
+            if len(row) == 2:
+                rows.append(row)
+                row = []
+        if row:
+            rows.append(row)
+        text = origin_mod.library_text()
+        if q:
+            text = f"مش عارف «{html_escape(q[:40])}» — دي الاتفاقيات:\n\n" + text
+        return Reply(text, InlineKeyboardMarkup(rows))
+
+    def agreement_card(self, key: str) -> Reply:
+        if key not in agr.AGREEMENTS:
+            return self.agreements_reply()
+        return Reply(origin_mod.agreement_text(key),
+                     InlineKeyboardMarkup([[Btn("📚 كل الاتفاقيات", callback_data="ol")]]))
 
     # ------------------------------------------------------------------- GPC
     def gpc_code(self, code: str) -> Reply:
