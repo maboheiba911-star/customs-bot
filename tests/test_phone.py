@@ -260,3 +260,11 @@ def test_wizard_token_only_saves_the_token(monkeypatch, tmp_path):
     monkeypatch.setattr(w, "check_token", lambda tok: (True, "@customs_test_bot"))
     assert w.run_token_only() == 0
     assert "TELEGRAM_BOT_TOKEN=1234567890:TEST" in (tmp_path / ".env").read_text()
+
+
+def test_token_with_a_space_from_copying_on_the_phone():
+    sys.path.insert(0, str(ROOT / "tools"))
+    import setup_wizard as w
+    tok = "1234567890:TEST-not-a-real-token-xxxxxxxxxxxx"
+    assert w.find_token(tok[:20] + " " + tok[20:]) == tok
+    assert w.find_token("  " + tok + "\n") == tok

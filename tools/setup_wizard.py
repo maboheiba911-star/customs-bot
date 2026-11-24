@@ -24,6 +24,8 @@ IS_WIN = os.name == "nt"
 # ----------------------------------------------------------------- helpers
 def find_token(text: str) -> str | None:
     m = TOKEN_RE.search(text or "")
+    if not m:              # copied across a line break on the phone: "1234:AAE… xyz" -> drop the spaces
+        m = TOKEN_RE.search(re.sub(r"\s+", "", text or ""))
     return m.group(1) if m else None
 
 
