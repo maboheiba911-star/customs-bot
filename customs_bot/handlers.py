@@ -1131,13 +1131,18 @@ def make_backup(s: CustomsService) -> bytes:
     """reference.db + app.db (allowed users, settings) + config.json, zipped — to move the bot to another
     device. A consistent copy is taken with SQLite's backup API while the bot keeps running. No token."""
     buf = io.BytesIO()
-    with tempfile.TemporaryDirectory() as tmp, zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp, \
+            zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         for src in (s.s.reference_db, s.s.app_db):
             if not Path(src).exists():
                 continue
             copy = Path(tmp) / Path(src).name
-            with sqlite3.connect(str(src)) as a, sqlite3.connect(str(copy)) as b:
+            a, b = sqlite3.connect(str(src)), sqlite3.connect(str(copy))
+            try:
                 a.backup(b)
+            finally:            # Windows can't delete the temp copy while a connection holds it open
+                b.close()
+                a.close()
             z.write(copy, Path(src).name)
         cfg = s.s.data_dir / "config.json"
         if cfg.exists():

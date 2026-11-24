@@ -126,3 +126,28 @@ def test_termux_installer_is_valid_bash():
     r = subprocess.run(["bash", "-n", str(ROOT / "termux_install.sh")], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     assert b"\r\n" not in (ROOT / "termux_install.sh").read_bytes()
+
+
+def test_backup_closes_every_database_it_opens(settings, monkeypatch):
+    """On Windows an open SQLite file can't be deleted, so the temporary copies must be closed."""
+    opened = []
+    real = sqlite3.connect
+
+    class Tracked:
+        def __init__(self, *a, **kw):
+            self.conn = real(*a, **kw)
+            self.closed = False
+            opened.append(self)
+
+        def backup(self, other):
+            return self.conn.backup(other.conn)
+
+        def close(self):
+            self.closed = True
+            self.conn.close()
+
+    monkeypatch.setattr(handlers.sqlite3, "connect", Tracked)
+    s = type("S", (), {"s": settings})()
+    data = handlers.make_backup(s)
+    assert zipfile.ZipFile(io.BytesIO(data)).namelist() == ["reference.db"]
+    assert opened and all(c.closed for c in opened)
