@@ -10,6 +10,7 @@ import os
 import re
 import secrets
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -801,15 +802,24 @@ def _local_time(ts: str | None) -> str:
         return ts[:16]
 
 
-async def latest_commit() -> dict:
+async def latest_commit(known: str | None = None) -> dict:
+    """The newest commit on the branch. The first request returns only the SHA (40 bytes); the commit
+    message is fetched only when the SHA is new — this runs every 30 minutes, also on mobile data."""
     async with httpx.AsyncClient(headers=_GH_HEADERS, timeout=20, follow_redirects=True,
                                  transport=upd_transport) as client:
-        r = await client.get(f"{GITHUB_API}/repos/{UPDATE_REPO}/commits/{UPDATE_BRANCH}")
+        r = await client.get(f"{GITHUB_API}/repos/{UPDATE_REPO}/commits/{UPDATE_BRANCH}",
+                             headers={"Accept": "application/vnd.github.sha"})
+        r.raise_for_status()
+        sha = r.text.strip()
+        if not re.fullmatch(r"[0-9a-f]{40}", sha):
+            raise ValueError("GitHub answered with something that is not a commit id")
+        if sha == known:
+            return {"sha": sha, "message": "", "date": ""}
+        r = await client.get(f"{GITHUB_API}/repos/{UPDATE_REPO}/git/commits/{sha}")   # small: no file diffs
         r.raise_for_status()
         j = r.json()
-    commit = j.get("commit") or {}
-    first_line = ((commit.get("message") or "").strip().splitlines() or [""])[0]
-    return {"sha": j["sha"], "message": first_line[:150], "date": (commit.get("committer") or {}).get("date", "")}
+    first_line = ((j.get("message") or "").strip().splitlines() or [""])[0]
+    return {"sha": sha, "message": first_line[:150], "date": (j.get("committer") or {}).get("date", "")}
 
 
 async def download_zip(sha: str) -> bytes:
@@ -990,15 +1000,15 @@ async def check_and_apply(application: Application, *, force: bool = False,
     upd = _upd_dir(s)
     try:
         s.app.kv_set("upd_last_check", iso())
+        inst = installed_version(upd)
         try:
-            latest = await latest_commit()
+            latest = await latest_commit(inst["sha"])
         except Exception as exc:
             s.app.kv_set("upd_last_error", f"GitHub: {type(exc).__name__}"[:200])
             return f"⚠️ مقدرتش أوصل لـ GitHub دلوقتي ({html.escape(type(exc).__name__)}). هجرب تاني لوحدي.", False
         s.app.kv_set("upd_last_error", "")
         s.app.kv_set("upd_remote", json.dumps(latest, ensure_ascii=False))
         sha7 = html.escape(latest["sha"][:7])
-        inst = installed_version(upd)
         if latest["sha"] == inst["sha"]:
             return f"✅ البوت على آخر نسخة (<code>{sha7}</code>).", False
         bad = _read_json(upd / "bad.json", [])
@@ -1111,6 +1121,57 @@ async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                         "upd_dir": str(upd), "python": sys.executable, "port": LOCK_PORT,
                         "boot": secrets.token_hex(8)})
     await send(update, context, Reply("🔄 البوت بيعيد التشغيل… ثواني وهيبلغك."))
+    _stop_application(context.application)
+
+
+BACKUP_NAME = "customs-bot-data.zip"
+
+
+def make_backup(s: CustomsService) -> bytes:
+    """reference.db + app.db (allowed users, settings) + config.json, zipped — to move the bot to another
+    device. A consistent copy is taken with SQLite's backup API while the bot keeps running. No token."""
+    buf = io.BytesIO()
+    with tempfile.TemporaryDirectory() as tmp, zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for src in (s.s.reference_db, s.s.app_db):
+            if not Path(src).exists():
+                continue
+            copy = Path(tmp) / Path(src).name
+            with sqlite3.connect(str(src)) as a, sqlite3.connect(str(copy)) as b:
+                a.backup(b)
+            z.write(copy, Path(src).name)
+        cfg = s.s.data_dir / "config.json"
+        if cfg.exists():
+            z.write(cfg, "config.json")
+    return buf.getvalue()
+
+
+async def cmd_backup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _admin_only(update, context):
+        return
+    s = svc(context)
+    await send(update, context, Reply("📦 بجهّز نسخة من بيانات البوت…"))
+    data = await asyncio.to_thread(make_backup, s)
+    await context.bot.send_document(
+        update.effective_chat.id, document=data, filename=BACKUP_NAME,
+        caption=("📦 بيانات البوت (التعريفة، GS1، المستخدمين والإعدادات) — من غير التوكن.\n"
+                 "علشان تنقل البوت لجهاز تاني: نزّل الملف ده على الجهاز الجديد."))
+
+
+async def cmd_shutdown(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Stop the bot on this device for good (it moved to another one: two copies with one token clash)."""
+    if not await _admin_only(update, context):
+        return
+    s = svc(context)
+    if (context.args or [""])[0].lower() not in ("yes", "نعم", "اه", "ايوه"):
+        await send(update, context, Reply(
+            "⏸️ الأمر ده بيوقف البوت على الجهاز ده خالص، ومش هيشتغل تاني هنا حتى لو الجهاز اتقفل وفتح.\n"
+            "استخدمه لما تنقل البوت لجهاز تاني (نفس البوت مينفعش يشتغل على جهازين).\n\n"
+            "للتأكيد ابعت: <code>/shutdown yes</code>"))
+        return
+    (s.s.data_dir / "STOPPED").write_text(iso(), encoding="utf-8")
+    await send(update, context, Reply(
+        "⏸️ البوت اتوقف على الجهاز ده. شغّله على الجهاز الجديد دلوقتي.\n"
+        "(لو عايز ترجّعه هنا: شغّل install_windows تاني، أو امسح الملف data/STOPPED.)"))
     _stop_application(context.application)
 
 
@@ -1397,6 +1458,8 @@ def register(app: Application) -> None:
     app.add_handler(CommandHandler("gs1", cmd_gs1))
     app.add_handler(CommandHandler("export", cmd_export))
     app.add_handler(CommandHandler("origin", cmd_origin))
+    app.add_handler(CommandHandler("backup", cmd_backup))
+    app.add_handler(CommandHandler("shutdown", cmd_shutdown))
     app.add_handler(CommandHandler("agreements", cmd_agreements))
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("setfx", cmd_setfx))

@@ -78,6 +78,8 @@ def startup_file() -> Path | None:
 def set_autostart(enabled: bool) -> str:
     target = startup_file()
     if target is None:
+        if os.environ.get("PREFIX", "").startswith("/data/data/com.termux"):
+            return "التشغيل التلقائي بعد إعادة تشغيل التليفون عن طريق Termux:Boot"
         return "التشغيل التلقائي متاح على ويندوز بس"
     if not enabled:
         target.unlink(missing_ok=True)
@@ -104,12 +106,14 @@ def stop_running_bot() -> None:
 
 
 def start_bot() -> None:
-    flags = 0
+    (ROOT / "data" / "STOPPED").unlink(missing_ok=True)   # starting it here on purpose: undo /shutdown
+    kw = dict(cwd=str(ROOT), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+              close_fds=True)
     if IS_WIN:
-        flags = 0x00000008 | 0x00000200          # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
-    subprocess.Popen([str(pythonw()), str(ROOT / "bot.py")], cwd=str(ROOT), creationflags=flags,
-                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                     close_fds=True)
+        kw["creationflags"] = 0x00000008 | 0x00000200   # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    else:
+        kw["start_new_session"] = True                  # keeps running after the terminal closes (Termux)
+    subprocess.Popen([str(pythonw()), str(ROOT / "bot.py")], **kw)
 
 
 def wait_for_start(seconds: int = 25, tick=None) -> tuple[bool, str]:

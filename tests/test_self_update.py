@@ -243,8 +243,11 @@ def test_helper_as_a_real_process(tmp_path, crash):
 def github(zip_bytes: bytes, sha: str = SHA, message: str = "تاريخ السعر بتوقيت مصر\n\nتفاصيل"):
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/commits/main"):
-            return httpx.Response(200, json={"sha": sha, "commit": {
-                "message": message, "committer": {"date": "2026-11-11T01:00:00Z"}}})
+            assert request.headers["accept"] == "application/vnd.github.sha"     # 40 bytes, not the diff
+            return httpx.Response(200, text=sha)
+        if request.url.path.endswith(f"/git/commits/{sha}"):
+            return httpx.Response(200, json={"sha": sha, "message": message,
+                                             "committer": {"date": "2026-11-11T01:00:00Z"}})
         if request.url.path.endswith(f"/zipball/{sha}"):
             return httpx.Response(200, content=zip_bytes)
         return httpx.Response(404)

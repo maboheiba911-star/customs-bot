@@ -25,6 +25,7 @@ class FakeTelegram(BaseRequest):
         self.sent: list[tuple[str, dict]] = []
         self._mid = 100
         self.files: dict[str, bytes] = {}
+        self.documents: list[dict] = []
 
     async def initialize(self):
         pass
@@ -51,6 +52,11 @@ class FakeTelegram(BaseRequest):
             result = {"id": 999, "is_bot": True, "first_name": "Customs", "username": "customs_test_bot",
                       "can_join_groups": True, "can_read_all_group_messages": False,
                       "supports_inline_queries": False}
+        elif endpoint == "sendDocument":
+            self._mid += 1
+            self.documents.append(request_data.multipart_data)
+            result = {"message_id": self._mid, "date": 0, "chat": {"id": int(params.get("chat_id", 1001)),
+                      "type": "private"}, "document": {"file_id": "d", "file_unique_id": "ud"}}
         elif endpoint in ("sendMessage", "editMessageText"):
             self._mid += 1
             result = {"message_id": self._mid, "date": 0, "chat": {"id": int(params.get("chat_id", 1001)),

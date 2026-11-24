@@ -8,7 +8,10 @@ import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from rapidfuzz import fuzz
+try:
+    from rapidfuzz import fuzz
+except ImportError:                 # Android (Termux): no build of rapidfuzz there — pure-Python stand-in
+    from . import _fuzz as fuzz
 
 from .arabic import expand_query, fts_query, is_arabic, normalize
 from .taxparse import ParsedTaxes, parse_taxes

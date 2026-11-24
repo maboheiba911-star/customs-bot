@@ -9,6 +9,7 @@ import os
 import shutil
 import socket
 import sys
+from datetime import timedelta
 from pathlib import Path
 
 from telegram.ext import Application, ApplicationBuilder, PersistenceInput, PicklePersistence
@@ -148,6 +149,10 @@ def main() -> None:
     if not s.token:
         log.error("TELEGRAM_BOT_TOKEN missing — run install_windows.bat (or copy .env.example to .env)")
         sys.exit("❌ TELEGRAM_BOT_TOKEN مش متسجل — شغّل install_windows.bat أو حط التوكن في ملف .env")
+    stopped = s.data_dir / "STOPPED"
+    if stopped.exists():           # /shutdown: the bot moved to another device (same token = conflicts)
+        log.info("stopped on this device (%s exists) — exiting", stopped)
+        sys.exit(f"⏸️ البوت متوقف على الجهاز ده (اتنقل لجهاز تاني). امسح الملف {stopped} لو عايز ترجّعه هنا.")
     lock = single_instance()
     if lock is None:
         log.info("another copy of the bot is already running on this computer — exiting")
@@ -163,8 +168,10 @@ def main() -> None:
     log.info("starting — tariff lines: %s, GPC bricks: %s, private: %s", counts["tariff"], counts["gpc_brick"],
              s.private_mode)
     # keep messages sent while the computer was off (Telegram holds them up to 24h);
-    # retry forever if the internet is not up yet (e.g. right after Windows starts)
-    app.run_polling(drop_pending_updates=False, bootstrap_retries=-1)
+    # retry forever if the internet is not up yet (e.g. right after Windows starts).
+    # POLL_TIMEOUT: seconds each idle request to Telegram waits for a message — longer = less mobile data
+    poll = max(5, min(50, int(os.getenv("POLL_TIMEOUT") or 10)))
+    app.run_polling(drop_pending_updates=False, bootstrap_retries=-1, timeout=timedelta(seconds=poll))
 
 
 if __name__ == "__main__":

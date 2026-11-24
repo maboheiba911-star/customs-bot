@@ -110,6 +110,18 @@
 
 ---
 
+## تشغيل على تليفون أندرويد (بالداتا أو الواي فاي)
+
+1. على الكمبيوتر (والبوت شغال): ابعت للبوت `/backup` ← هيبعتلك ملف `customs-bot-data.zip` ← افتحه من التليفون ونزّله.
+2. ابعت للبوت `/shutdown yes` (البوت مينفعش يشتغل على جهازين بنفس التوكن).
+3. على التليفون: نزّل **Termux** و**Termux:Boot** من F-Droid، وافتح Termux والصق:
+   `curl -fsSLo i.sh https://raw.githubusercontent.com/maboheiba911-star/customs-bot/main/termux_install.sh && bash i.sh`
+4. لما يطلب التوكن: من BotFather ← `/mybots` ← البوت ← API Token ← انسخه والصقه.
+5. الإعدادات ← التطبيقات ← Termux ← البطارية ← «غير مقيّد»، وافتح Termux:Boot مرة واحدة.
+
+على التليفون البوت بيحدّث نفسه من GitHub برضه، وبيستهلك داتا قليلة وهو مستني (`POLL_TIMEOUT=30`).
+وللرجوع للكمبيوتر: `/shutdown yes` من التليفون، وبعدين شغّل `install_windows` على الكمبيوتر.
+
 ## 6) تشغيل على سيرفر بدل الكمبيوتر (اختياري)
 
 فيه `Dockerfile` و `deploy/customs-bot.service` (Ubuntu/systemd). على السيرفر: `pip install -r requirements.txt`، ملف `.env` فيه `TELEGRAM_BOT_TOKEN`، و `python bot.py`.
