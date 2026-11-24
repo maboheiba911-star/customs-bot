@@ -33,7 +33,7 @@ update_lists() {
   done
   return 1
 }
-has_python() { apt-cache policy python 2>/dev/null | grep -q 'Candidate: [0-9]'; }
+has_python() { apt-cache show python >/dev/null 2>&1; }      # بدون pipe: مع pipefail الـ grep -q ممكن يدي نتيجة غلط
 # سيرفر الحزم الافتراضي ممكن يبقى مقفول على بعض الشبكات — نجرّب السيرفرات التانية لحد ما واحد يرد
 pick_mirror() {
   for f in "$PREFIX"/etc/termux/mirrors/*/*; do
