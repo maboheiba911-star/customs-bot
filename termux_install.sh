@@ -104,7 +104,9 @@ python -c "import sqlite3; sqlite3.connect(':memory:').execute('create virtual t
 # ------------------------------------------------------------------ 5) data
 ask_token() {
   touch .env
-  grep -q '^TELEGRAM_BOT_TOKEN=.\+' .env && return 0
+  if grep -q '^TELEGRAM_BOT_TOKEN=.\+' .env; then
+    python tools/setup_wizard.py --check-saved && return 0
+  fi
   echo ""
   echo "فحص الوصول لتليجرام:"
   python tools/net_check.py || warn "هكمّل، والبوت هيفضل يحاول يوصل لتليجرام لوحده. لو فضل كده: شغّل تطبيق VPN (زي 1.1.1.1) وشغّل الأمر تاني."

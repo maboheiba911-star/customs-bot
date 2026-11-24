@@ -334,3 +334,70 @@ def test_bot_uses_ipv4_when_asked(tmp_path):
                TELEGRAM_BOT_TOKEN="1234567890:TEST-not-a-real-token-xxxxxxxxxxxx")
     subprocess.run([sys.executable, str(ROOT / "bot.py")], env=env, capture_output=True, text=True, timeout=60)
     assert "FORCE_IPV4" in (tmp_path / "bot.log").read_text(encoding="utf-8")
+
+
+# ------------------------------------------------------------ token pasted on a phone
+TOK = "1234567890:TEST-not-a-real-token-xxxxxxxxxxxx"
+
+
+def _wizard():
+    sys.path.insert(0, str(ROOT / "tools"))
+    import setup_wizard as w
+    return w
+
+
+def test_token_survives_what_phones_add_when_copying():
+    w = _wizard()
+    assert w.find_token("‎" + TOK + "‏") == TOK                    # direction marks (Arabic UI)
+    assert w.find_token("⁦" + TOK + "⁩") == TOK
+    assert w.find_token(TOK[:25] + "​" + TOK[25:]) == TOK               # zero-width space inside
+    assert w.find_token("١٢٣٤٥٦٧٨٩٠" + TOK[10:]) == TOK                       # Arabic digits
+    assert w.find_token("\x1b[200~" + TOK + "\x1b[201~") == TOK              # terminal paste markers
+    assert w.find_token(TOK + TOK) == TOK                                     # pasted twice
+    tok2 = "1234567890:TEST-not-a-real-token-xxxxxxxxx12"                      # secret ending in digits
+    assert w.find_token(tok2 + tok2) == tok2
+    assert w.find_token("مفيش") is None
+
+
+def test_check_token_says_why_telegram_refused(monkeypatch):
+    w = _wizard()
+    import httpx
+
+    class R:
+        def __init__(self, data):
+            self._d = data
+
+        def json(self):
+            return self._d
+
+    for code, word in ((401, "قديم"), (404, "ناقص"), (429, "429")):
+        monkeypatch.setattr(httpx, "get", lambda url, timeout, c=code: R({"ok": False, "error_code": c, "description": "x"}))
+        ok, msg = w.check_token(TOK)
+        assert not ok and word in msg and "مش صحيح" in msg
+
+
+def test_token_prompt_never_prints_the_token(monkeypatch, tmp_path, capsys):
+    w = _wizard()
+    good = "1234567890:TEST-not-a-real-token-yyyyyyyyyyyy"
+    monkeypatch.setattr(w, "ENV", tmp_path / ".env")
+    answers = iter([TOK, good])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+    monkeypatch.setattr(w, "check_token", lambda tok: (True, "@customs_test_bot") if tok == good else (False, w.OLD_TOKEN_HELP))
+    assert w.run_token_only() == 0
+    out = capsys.readouterr().out
+    assert TOK not in out and good not in out
+    assert "بوت رقم 1234567890" in out and "…xxxx" in out and "…yyyy" in out and "قديم" in out
+    assert f"TELEGRAM_BOT_TOKEN={good}" in (tmp_path / ".env").read_text()
+
+
+def test_saved_token_is_checked_before_it_is_reused(monkeypatch, tmp_path):
+    w = _wizard()
+    monkeypatch.setattr(w, "ENV", tmp_path / ".env")
+    assert w.run_check_saved() == 1                                           # nothing saved
+    (tmp_path / ".env").write_text(f"TELEGRAM_BOT_TOKEN={TOK}\n", encoding="utf-8")
+    monkeypatch.setattr(w, "check_token", lambda tok: (True, "@customs_test_bot"))
+    assert w.run_check_saved() == 0
+    monkeypatch.setattr(w, "check_token", lambda tok: (False, w.OLD_TOKEN_HELP))
+    assert w.run_check_saved() == 1                                           # revoked -> ask again
+    monkeypatch.setattr(w, "check_token", lambda tok: (False, w.NETWORK_PREFIX + " (ReadTimeout)"))
+    assert w.run_check_saved() == 0                                           # can't tell -> keep it

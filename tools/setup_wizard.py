@@ -10,26 +10,44 @@ import re
 import subprocess
 import sys
 import time
+import unicodedata
 import webbrowser
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 ENV = ROOT / ".env"
 LOG = ROOT / "data" / "bot.log"
-TOKEN_RE = re.compile(r"(\d{6,12}:[A-Za-z0-9_-]{30,50})")
+# bot id : secret. The secret stops before a second copy of the same token (pasted twice) or any other character.
+TOKEN_RE = re.compile(r"(\d{6,12}):([A-Za-z0-9_-]{30,50}?)(?=\1:|[^A-Za-z0-9_-]|$)", re.ASCII)
 STARTUP_NAME = "CustomsBot.vbs"
 IS_WIN = os.name == "nt"
+_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")
 
 
 # ----------------------------------------------------------------- helpers
+def _clean(text: str) -> str:
+    """Undo what phones add when copying: Arabic digits, full-width letters, invisible direction marks."""
+    text = unicodedata.normalize("NFKC", text or "").translate(_DIGITS)
+    return "".join(ch for ch in text if ch in " \t\n" or unicodedata.category(ch) not in ("Cf", "Cc"))
+
+
 def find_token(text: str) -> str | None:
-    m = TOKEN_RE.search(text or "")
+    text = _clean(text)
+    m = TOKEN_RE.search(text)
     if not m:              # copied across a line break on the phone: "1234:AAE… xyz" -> drop the spaces
-        m = TOKEN_RE.search(re.sub(r"\s+", "", text or ""))
-    return m.group(1) if m else None
+        m = TOKEN_RE.search(re.sub(r"\s+", "", text))
+    return f"{m.group(1)}:{m.group(2)}" if m else None
+
+
+def mask(token: str) -> str:
+    """What is safe to show on screen: the bot number (public) and the last 4 characters."""
+    bot_id, _, secret = token.partition(":")
+    return f"بوت رقم {bot_id} — آخره …{secret[-4:]}"
 
 
 NETWORK_PREFIX = "مش قادر أوصل لتليجرام"
+OLD_TOKEN_HELP = ("التوكن مش صحيح: تليجرام بيقول إنه قديم أو اتلغى.\n"
+                  "   في BotFather: انزل لآخر رسالة خالص، ودوس على التوكن اللي فيها مرة واحدة — ومتدوسش Revoke.")
 
 
 def check_token(token: str, tries: int = 3) -> tuple[bool, str]:
@@ -50,7 +68,27 @@ def check_token(token: str, tries: int = 3) -> tuple[bool, str]:
         return False, f"{NETWORK_PREFIX} ({type(err).__name__}) — اتأكد من النت"
     if data.get("ok"):
         return True, "@" + data["result"].get("username", "")
-    return False, "التوكن مش صحيح — انسخه تاني من BotFather"
+    code = data.get("error_code")
+    if code == 401:
+        return False, OLD_TOKEN_HELP
+    if code == 404:
+        return False, "التوكن مش صحيح: ناقص أو فيه حرف زيادة — انسخه تاني بالضغط عليه مرة واحدة في BotFather"
+    return False, f"التوكن مش صحيح — رد تليجرام: {code} {data.get('description', '')}".strip()
+
+
+def read_secret(prompt: str = "> ") -> str:
+    """One line from the user; on a real terminal it is not shown, so a screenshot can't leak the token."""
+    try:
+        tty = sys.stdin.isatty()
+    except Exception:
+        tty = False
+    if tty:
+        import getpass
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")      # a terminal without echo control just shows the text
+            return getpass.getpass(prompt)
+    return input(prompt)
 
 
 def read_env() -> dict[str, str]:
@@ -261,20 +299,42 @@ def run_console() -> int:
     return 0 if ok else 1
 
 
-def run_token_only() -> int:
-    """Ask for the token in the terminal, check it with Telegram and save it — nothing else (Termux)."""
+def _apply_ipv4() -> None:
     if read_env().get("FORCE_IPV4", "").lower() in ("1", "true", "yes"):
         sys.path.insert(0, str(ROOT))
         from customs_bot import net
         net.prefer_ipv4()
-    for _ in range(5):
+
+
+def run_check_saved() -> int:
+    """0 = the saved token still works (or the network can't tell us); 1 = none saved or Telegram rejects it."""
+    tok = find_token(read_env().get("TELEGRAM_BOT_TOKEN", ""))
+    if not tok:
+        return 1
+    _apply_ipv4()
+    ok, info = check_token(tok)
+    if ok:
+        print(f"✅ التوكن المحفوظ شغال ({info})")
+        return 0
+    if info.startswith(NETWORK_PREFIX):
+        return 0
+    print("التوكن المحفوظ مبقاش شغال — هنحط الجديد.")
+    return 1
+
+
+def run_token_only() -> int:
+    """Ask for the token in the terminal, check it with Telegram and save it — nothing else (Termux)."""
+    _apply_ipv4()
+    print("(التوكن مش هيظهر وانت بتلصقه — ده طبيعي عشان الأمان. الصق ودوس Enter)")
+    for _ in range(8):
         try:
-            tok = find_token(input("> "))
+            tok = find_token(read_secret("> "))
         except EOFError:
             return 1
         if not tok:
-            print("التوكن مش واضح — انسخه تاني من BotFather والصقه")
+            print("✖ مفيش توكن في اللي اتلصق — انسخه تاني من BotFather والصقه")
             continue
+        print("وصلني: " + mask(tok))
         ok, info = check_token(tok)
         if ok:
             write_env({"TELEGRAM_BOT_TOKEN": tok})
@@ -291,6 +351,8 @@ def run_token_only() -> int:
 if __name__ == "__main__":
     if "--token-only" in sys.argv:
         sys.exit(run_token_only())
+    if "--check-saved" in sys.argv:
+        sys.exit(run_check_saved())
     if "--console" in sys.argv:
         sys.exit(run_console())
     try:
