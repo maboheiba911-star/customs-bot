@@ -23,7 +23,7 @@ from pathlib import Path
 import httpx
 from telegram import ReplyKeyboardMarkup, Update
 from telegram.constants import ChatAction, ParseMode
-from telegram.error import BadRequest
+from telegram.error import BadRequest, TimedOut
 from telegram.ext import (
     Application,
     ApplicationHandlerStop,
@@ -1156,10 +1156,14 @@ async def cmd_backup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     s = svc(context)
     await send(update, context, Reply("📦 بجهّز نسخة من بيانات البوت…"))
     data = await asyncio.to_thread(make_backup, s)
-    await context.bot.send_document(
-        update.effective_chat.id, document=data, filename=BACKUP_NAME,
-        caption=("📦 بيانات البوت (التعريفة، GS1، المستخدمين والإعدادات) — من غير التوكن.\n"
-                 "علشان تنقل البوت لجهاز تاني: نزّل الملف ده على الجهاز الجديد."))
+    try:            # a few MB over a slow home upload: give it time (the defaults are a few seconds)
+        await context.bot.send_document(
+            update.effective_chat.id, document=data, filename=BACKUP_NAME,
+            caption=("📦 بيانات البوت (التعريفة، GS1، المستخدمين والإعدادات) — من غير التوكن.\n"
+                     "علشان تنقل البوت لجهاز تاني: نزّل الملف ده على الجهاز الجديد."),
+            read_timeout=120, write_timeout=180, connect_timeout=30)
+    except TimedOut:
+        await send(update, context, Reply("⏳ النت بطيء — لو الملف موصلش فوق خلال دقيقة، ابعت /backup تاني."))
 
 
 async def cmd_shutdown(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

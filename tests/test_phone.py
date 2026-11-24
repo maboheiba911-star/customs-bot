@@ -151,3 +151,11 @@ def test_backup_closes_every_database_it_opens(settings, monkeypatch):
     data = handlers.make_backup(s)
     assert zipfile.ZipFile(io.BytesIO(data)).namelist() == ["reference.db"]
     assert opened and all(c.closed for c in opened)
+
+
+async def test_backup_on_a_slow_upload_says_so(app_and_tg):
+    app, tg = app_and_tg
+    tg.document_timeout = True
+    await send(app, msg_update("/start"))
+    await send(app, msg_update("/backup"))
+    assert "النت بطيء" in tg.last_text()

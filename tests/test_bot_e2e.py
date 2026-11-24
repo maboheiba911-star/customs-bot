@@ -26,6 +26,7 @@ class FakeTelegram(BaseRequest):
         self._mid = 100
         self.files: dict[str, bytes] = {}
         self.documents: list[dict] = []
+        self.document_timeout = False
 
     async def initialize(self):
         pass
@@ -53,6 +54,9 @@ class FakeTelegram(BaseRequest):
                       "can_join_groups": True, "can_read_all_group_messages": False,
                       "supports_inline_queries": False}
         elif endpoint == "sendDocument":
+            if self.document_timeout:
+                from telegram.error import TimedOut
+                raise TimedOut()
             self._mid += 1
             self.documents.append(request_data.multipart_data)
             result = {"message_id": self._mid, "date": 0, "chat": {"id": int(params.get("chat_id", 1001)),
