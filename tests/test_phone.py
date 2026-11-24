@@ -5,6 +5,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import time
 import zipfile
 from pathlib import Path
 
@@ -93,9 +94,16 @@ async def test_shutdown_asks_then_stops_for_good(app_and_tg, settings, monkeypat
     app, tg = app_and_tg
     stopped = []
     monkeypatch.setattr(handlers, "_stop_application", lambda application: stopped.append(1))
-    await send(app, msg_update("/shutdown"))
+    def now(text):
+        u = msg_update(text)
+        u["message"]["date"] = int(time.time()) + 5
+        return u
+
+    await send(app, msg_update("/shutdown yes"))           # sent before this copy started: ignored
+    assert not (settings.data_dir / "STOPPED").exists() and not stopped
+    await send(app, now("/shutdown"))
     assert "/shutdown yes" in tg.last_text() and not (settings.data_dir / "STOPPED").exists()
-    await send(app, msg_update("/shutdown yes"))
+    await send(app, now("/shutdown yes"))
     assert (settings.data_dir / "STOPPED").exists() and stopped == [1]
 
 
@@ -159,3 +167,96 @@ async def test_backup_on_a_slow_upload_says_so(app_and_tg):
     await send(app, msg_update("/start"))
     await send(app, msg_update("/backup"))
     assert "النت بطيء" in tg.last_text()
+
+
+# ------------------------------------------------------------------ the backup straight from Telegram
+class FakeTelegramAPI:
+    """A tiny Bot API on localhost for tools/fetch_backup.py (stdlib urllib, so no httpx mocks)."""
+
+    def __init__(self, blob: bytes):
+        import http.server
+        import json as _json
+        import threading
+        import urllib.parse as up
+
+        self.calls, self.sent, self.blob = [], [], blob
+        api = self
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def _reply(self, code, body):
+                data = body if isinstance(body, bytes) else _json.dumps(body).encode()
+                self.send_response(code)
+                self.end_headers()
+                self.wfile.write(data)
+
+            def do_GET(self):
+                self._reply(200, api.blob)                      # /file/bot<token>/<path>
+
+            def do_POST(self):
+                method = self.path.rsplit("/", 1)[-1]
+                n = int(self.headers.get("Content-Length") or 0)
+                params = dict(up.parse_qsl(self.rfile.read(n).decode()))
+                api.calls.append((method, params))
+                if method == "getMe":
+                    return self._reply(200, {"ok": True, "result": {"username": "customs_test_bot"}})
+                if method == "getUpdates":
+                    polls = [c for c in api.calls if c[0] == "getUpdates"]
+                    if len(polls) == 1:                          # the computer copy is still polling
+                        return self._reply(409, {"ok": False, "error_code": 409, "description": "Conflict"})
+                    if params.get("offset") == "12":
+                        return self._reply(200, {"ok": True, "result": []})
+                    return self._reply(200, {"ok": True, "result": [
+                        {"update_id": 10, "message": {"chat": {"id": 1001}, "text": "/shutdown yes"}},
+                        {"update_id": 11, "message": {"chat": {"id": 1001}, "document": {
+                            "file_id": "F1", "file_name": "customs-bot-data.zip"}}}]})
+                if method == "getFile":
+                    return self._reply(200, {"ok": True, "result": {"file_path": "documents/f.zip"}})
+                if method == "sendMessage":
+                    api.sent.append(params)
+                    return self._reply(200, {"ok": True, "result": {}})
+                self._reply(404, {"ok": False})
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.url = f"http://127.0.0.1:{self.server.server_port}"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.server.shutdown()
+
+
+def test_fetch_backup_waits_for_the_forwarded_file(tmp_path, monkeypatch):
+    sys.path.insert(0, str(ROOT / "tools"))
+    import fetch_backup
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.write(ROOT / "data" / "reference.db", "reference.db")
+        z.writestr("app.db", b"x")
+    api = FakeTelegramAPI(buf.getvalue())
+    monkeypatch.setattr(fetch_backup, "API", api.url)
+    monkeypatch.setattr(fetch_backup.time, "sleep", lambda s: None)
+    said = []
+    try:
+        assert fetch_backup.wait_for_backup("123:ABC", tmp_path, minutes=1, poll=1, say=said.append)
+    finally:
+        api.close()
+    assert (tmp_path / "reference.db").stat().st_size > 1_000_000 and (tmp_path / "app.db").exists()
+    assert any("/shutdown yes" in s for s in said)                    # told to stop the computer copy
+    assert api.sent and "وصل" in api.sent[0]["text"]
+    offsets = [c[1].get("offset") for c in api.calls if c[0] == "getUpdates"]
+    assert offsets[-1] == "12"                                          # both updates marked as handled
+
+
+def test_wizard_token_only_saves_the_token(monkeypatch, tmp_path):
+    sys.path.insert(0, str(ROOT / "tools"))
+    import setup_wizard as w
+
+    monkeypatch.setattr(w, "ENV", tmp_path / ".env")
+    answers = iter(["not a token", "1234567890:TEST-not-a-real-token-xxxxxxxxxxxx"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+    monkeypatch.setattr(w, "check_token", lambda tok: (True, "@customs_test_bot"))
+    assert w.run_token_only() == 0
+    assert "TELEGRAM_BOT_TOKEN=1234567890:TEST" in (tmp_path / ".env").read_text()

@@ -60,15 +60,13 @@ pkg upgrade -y -o Dpkg::Options::=--force-confnew >/dev/null 2>&1 || true
 pkg install -y python curl termux-tools || fail "تسطيب بايثون فشل — صوّر الشاشة وابعتها لـ Claude."
 python -m pip --version >/dev/null 2>&1 || pkg install -y python-pip
 
-# ------------------------------------------------------------------ 2) storage permission
-say "2/6 إذن الملفات — لو ظهرت رسالة اضغط «سماح / Allow»"
-can_read() { ls "$HOME/storage/shared/" >/dev/null 2>&1; }     # الفولدر ممكن يبان من غير ما يكون فيه إذن قراءة
+# ------------------------------------------------------------------ 2) storage permission (optional)
+say "2/6 إذن الملفات (لو ظهرت رسالة اضغط «سماح») — لو مظهرتش مش مشكلة"
+can_read() { ls "$HOME/storage/shared/" >/dev/null 2>&1; }
 if ! can_read; then
-  termux-setup-storage || true
-  echo "لو فتحتلك صفحة «السماح بإدارة كل الملفات» فعّل المفتاح وارجع هنا."
-  for _ in $(seq 1 120); do can_read && break; sleep 1; done
+  termux-setup-storage >/dev/null 2>&1 || true
+  for _ in $(seq 1 15); do can_read && break; sleep 1; done
 fi
-can_read || fail "Termux لسه مش واخد إذن الملفات: الإعدادات ← التطبيقات ← Termux ← الأذونات ← الملفات والوسائط ← اسمح (أو «السماح بإدارة كل الملفات»)، وبعدين شغّل الأمر تاني."
 
 # ------------------------------------------------------------------ 3) code
 say "3/6 تنزيل البوت من GitHub"
@@ -104,31 +102,37 @@ python -c "import sqlite3; sqlite3.connect(':memory:').execute('create virtual t
   || fail "قاعدة البيانات في Termux مش بتدعم البحث (FTS5) — ابعت لـ Claude."
 
 # ------------------------------------------------------------------ 5) data
-say "5/6 بيانات البوت (customs-bot-data.zip)"
+ask_token() {
+  touch .env
+  grep -q '^TELEGRAM_BOT_TOKEN=.\+' .env && return 0
+  echo ""
+  echo "الصق توكن البوت هنا ودوس Enter"
+  echo "(من BotFather ← /mybots ← اختار البوت ← API Token ← انسخه):"
+  python tools/setup_wizard.py --token-only < /dev/tty || fail "التوكن ما اتحفظش — شغّل الأمر تاني."
+}
+say "5/6 بيانات البوت"
 if [ -f "$DIR/data/reference.db" ]; then
   echo "البيانات موجودة من قبل — هسيبها."
 else
-  python - "$DIR/data" <<'PY' || fail "مش لاقي ملف البيانات. ابعت /backup للبوت (وهو شغال على الكمبيوتر)، افتح الملف اللي هيوصلك في تليجرام ونزّله، وبعدين شغّل الأمر تاني."
+  python - "$DIR/data" <<'PY' 2>/dev/null || true
 import glob, os, sys, zipfile
 home = os.path.expanduser("~/storage/shared")
 places = ["Download", "Download/Telegram", "Telegram/Telegram Documents",
-          "Android/media/org.telegram.messenger/Telegram/Telegram Documents",
-          "Android/media/org.telegram.messenger.web/Telegram/Telegram Documents"]
+          "Android/media/org.telegram.messenger/Telegram/Telegram Documents"]
 found = [f for p in places for f in glob.glob(os.path.join(home, p, "customs-bot-data*.zip"))]
-if not found:
-    found = glob.glob(os.path.join(home, "**", "customs-bot-data*.zip"), recursive=True)
-if not found:
-    zips = sorted(glob.glob(os.path.join(home, "Download", "**", "*.zip"), recursive=True))[-8:]
-    print("ملفات zip اللي لقيتها في التنزيلات:", *(zips or ["(ولا ملف)"]), sep="\n  ")
-    sys.exit(1)
-src = max(found, key=os.path.getmtime)
-with zipfile.ZipFile(src) as z:
-    for name in ("reference.db", "app.db", "config.json"):
-        if name in z.namelist():
-            with open(os.path.join(sys.argv[1], name), "wb") as f:
-                f.write(z.read(name))
-print("اتنقلت البيانات من:", src)
+if found:
+    src = max(found, key=os.path.getmtime)
+    with zipfile.ZipFile(src) as z:
+        for name in ("reference.db", "app.db", "config.json"):
+            if name in z.namelist():
+                with open(os.path.join(sys.argv[1], name), "wb") as f:
+                    f.write(z.read(name))
+    print("اتنقلت البيانات من:", src)
 PY
+  if [ ! -f "$DIR/data/reference.db" ]; then
+    ask_token
+    python tools/fetch_backup.py "$DIR/data" || fail "الملف موصلش. شغّل الأمر تاني وابعت الملف (Forward) للبوت."
+  fi
 fi
 [ -f "$DIR/data/reference.db" ] || fail "ملف reference.db مش موجود."
 
@@ -149,6 +153,7 @@ chmod +x "$BOOT"
 
 # ------------------------------------------------------------------ 6) token + start
 termux-wake-lock || true          # يمنع أندرويد ينيّم البوت
+ask_token
 if grep -q '^TELEGRAM_BOT_TOKEN=.\+' .env; then
   say "6/6 تشغيل البوت"
   pkill -f "python bot.py" 2>/dev/null || true; sleep 2          # إعادة تشغيل بالكود الجديد

@@ -249,7 +249,28 @@ def run_console() -> int:
     return 0 if ok else 1
 
 
+def run_token_only() -> int:
+    """Ask for the token in the terminal, check it with Telegram and save it — nothing else (Termux)."""
+    for _ in range(5):
+        try:
+            tok = find_token(input("> "))
+        except EOFError:
+            return 1
+        if not tok:
+            print("التوكن مش واضح — انسخه تاني من BotFather والصقه")
+            continue
+        ok, info = check_token(tok)
+        if ok:
+            write_env({"TELEGRAM_BOT_TOKEN": tok})
+            print(f"✅ التوكن شغال ({info})")
+            return 0
+        print("✖ " + info)
+    return 1
+
+
 if __name__ == "__main__":
+    if "--token-only" in sys.argv:
+        sys.exit(run_token_only())
     if "--console" in sys.argv:
         sys.exit(run_console())
     try:

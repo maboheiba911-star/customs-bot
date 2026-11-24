@@ -1171,6 +1171,10 @@ async def cmd_shutdown(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not await _admin_only(update, context):
         return
     s = svc(context)
+    started = context.application.bot_data.get("started_at")
+    sent = update.effective_message.date if update.effective_message else None
+    if started and sent and sent < started:
+        return          # sent before this copy started (e.g. to the copy on the old device): never act on it
     if (context.args or [""])[0].lower() not in ("yes", "نعم", "اه", "ايوه"):
         await send(update, context, Reply(
             "⏸️ الأمر ده بيوقف البوت على الجهاز ده خالص، ومش هيشتغل تاني هنا حتى لو الجهاز اتقفل وفتح.\n"
@@ -1467,6 +1471,7 @@ def register(app: Application) -> None:
     app.add_handler(CommandHandler("gs1", cmd_gs1))
     app.add_handler(CommandHandler("export", cmd_export))
     app.add_handler(CommandHandler("origin", cmd_origin))
+    app.bot_data.setdefault("started_at", datetime.now(timezone.utc))
     app.add_handler(CommandHandler("backup", cmd_backup))
     app.add_handler(CommandHandler("shutdown", cmd_shutdown))
     app.add_handler(CommandHandler("agreements", cmd_agreements))
