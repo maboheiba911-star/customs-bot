@@ -17,10 +17,19 @@ fail() { printf '\n\033[1;31m✖ %s\033[0m\n' "$1"; exit 1; }
 
 # ------------------------------------------------------------------ 1) packages
 say "1/6 تجهيز Termux (أول مرة بياخد كام دقيقة — سيبه يكمّل)"
-pkg update -y -o Dpkg::Options::=--force-confnew >/dev/null 2>&1 || pkg update -y
-pkg upgrade -y -o Dpkg::Options::=--force-confnew >/dev/null 2>&1 || true
-pkg install -y python curl termux-tools >/dev/null 2>&1 || pkg install -y python curl termux-tools
-python -m pip --version >/dev/null 2>&1 || pkg install -y python-pip
+# أول ما Termux يتفتح بيحدّث نفسه في الخلفية وبيقفل الـ apt لحد ما يخلص — نستنى بدل ما نفشل
+retry() {
+  for i in $(seq 1 18); do
+    "$@" && return 0
+    echo "⏳ Termux لسه بيجهّز نفسه — هستنى 10 ثواني وأجرب تاني ($i/18)"
+    sleep 10
+  done
+  return 1
+}
+retry pkg update -y -o Dpkg::Options::=--force-confnew || fail "تحديث Termux فشل — صوّر الشاشة وابعتها لـ Claude."
+retry pkg upgrade -y -o Dpkg::Options::=--force-confnew || true
+retry pkg install -y python curl termux-tools || fail "تسطيب بايثون فشل — صوّر الشاشة وابعتها لـ Claude."
+python -m pip --version >/dev/null 2>&1 || retry pkg install -y python-pip
 
 # ------------------------------------------------------------------ 2) storage permission
 say "2/6 إذن الملفات — لو ظهرت رسالة اضغط «سماح / Allow»"
