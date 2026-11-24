@@ -67,7 +67,8 @@ def build_application(settings=None, *, builder: ApplicationBuilder | None = Non
         await application.bot.set_my_commands([
             ("start", "ابدأ"), ("help", "طريقة الاستخدام"), ("hs", "بحث عن بند"),
             ("calc", "حساب الجمارك"), ("origin", "المنشأ والاتفاقيات"), ("export", "متطلبات التصدير"),
-            ("agreements", "اتفاقيات مصر التجارية"), ("gs1", "تصنيف GS1"),
+            ("agreements", "اتفاقيات مصر التجارية"), ("buyer", "جمارك بلد المشتري"),
+            ("rebate", "رد الأعباء التصديرية"), ("gs1", "تصنيف GS1"),
             ("fx", "أسعار الصرف"), ("about", "مصادر البيانات"), ("version", "نسخة البوت والتحديث"),
         ])
         # plain asyncio tasks (not application.create_task) so stopping the bot never waits on them
@@ -133,6 +134,12 @@ def selftest() -> int:
             r = await svc.origin_intent(router.parse("تصدير 0713330090 لتركيا"))
             assert "EUR.1" in r.text, r.text[:300]
             assert "oa|eu" in str(svc.agreements_reply().keyboard.to_dict())
+            from customs_bot import rebate as rb, wits                          # buyer duty & export rebate
+            assert wits.parse(wits.SAMPLE, "000")[0].kind == "MFN"
+            res = rb.compute(rb.Shipment(iso="KE", fob_egp=1_000_000, basic_rate=4, mode="sea", freight_egp=100_000))
+            assert round(res.total) == 100_000, res.total
+            assert "رد الأعباء" in svc.rebate_start().text
+            assert router.parse("جمارك المشتري 071333 إيطاليا").kind == "buyer"
         finally:
             await svc.live.close()
 

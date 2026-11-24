@@ -16,6 +16,8 @@ from telegram import InlineKeyboardMarkup
 from . import agreements as agr
 from . import formatters as fmt
 from . import origin as origin_mod
+from . import rebate as rb
+from . import wits
 from .appdb import AppDB
 from html import escape as html_escape
 
@@ -26,7 +28,9 @@ from .fx import fetch_cbe
 from .glossary import hs_to_gpc_terms, translate
 from .official import EXPORT, HEADERS, IMPORT, LiveLookup
 from .refdb import ReferenceDB, TariffItem
-from .router import Intent
+from .arabic import normalize
+from .router import CURRENCIES, MULTIPLIERS, Intent, parse_amount
+from .router import _clean as _clean_text
 from .settings import Settings
 
 PAGE = 6
@@ -78,6 +82,29 @@ def _hours_since(ts: str | None) -> float | None:
     return (datetime.now(timezone.utc) - t).total_seconds() / 3600
 
 
+def parse_money(text: str) -> tuple[float, str | None] | None:
+    """'50000$', '50 الف دولار', '2.5m', '15000' (pounds) -> (value, currency or None)."""
+    toks = _clean_text(text).split(" ")
+    value: float | None = None
+    cur: str | None = None
+    for i, tok in enumerate(toks):
+        n = normalize(tok)
+        if value is None:
+            amt = parse_amount(tok)
+            if amt:
+                value, cur = amt[0], amt[1] or cur
+                continue
+        if value is not None and n in MULTIPLIERS:
+            value *= MULTIPLIERS[n]
+            continue
+        two = normalize(" ".join(toks[i:i + 2]))
+        if two in CURRENCIES:
+            cur = CURRENCIES[two]
+        elif n in CURRENCIES and cur is None:
+            cur = CURRENCIES[n]
+    return (value, cur) if value else None
+
+
 @dataclass
 class Reply:
     text: str
@@ -92,6 +119,7 @@ class CustomsService:
         self.app = app
         self.live = live
         self._fx_failed_at: dict[str, float] = {}
+        self.tariffs = wits.TariffSource(app.kv_get, app.kv_set)
 
     # ------------------------------------------------------------ access control
     def owner_id(self) -> int | None:
@@ -416,7 +444,10 @@ class CustomsService:
                      state={"origin": {"dir": direction, "code": code, "value": value, "await": "country"}})
 
     def country_not_found(self, text: str, st: dict) -> Reply:
-        r = self.ask_country(st.get("dir", "i"), st.get("code", ""), st.get("value"))
+        if st.get("dir") == "b":
+            r = self.ask_buyer_country(st.get("code", ""))
+        else:
+            r = self.ask_country(st.get("dir", "i"), st.get("code", ""), st.get("value"))
         r.text = f"مش لاقي بلد اسمها «{html_escape(text[:40])}».\n" + r.text
         return r
 
@@ -502,7 +533,9 @@ class CustomsService:
         if item is None:
             return Reply(f"❌ البند <code>{line}</code> مش موجود في التعريفة.")
         text = origin_mod.export_card(item, instr, source or fmt.source_line(item, self.snapshot), iso)
-        rows = [[Btn("🌐 بلد تاني", callback_data=f"oq|e|{line}"), Btn("📥 الاستيراد", callback_data=f"oi|{line}")]]
+        rows = [[Btn("🌐 بلد تاني", callback_data=f"oq|e|{line}"), Btn("📥 الاستيراد", callback_data=f"oi|{line}")],
+                [Btn("🌍 جمارك المشتري", callback_data=f"ob|{line}|{iso}"),
+                 Btn("💰 رد الأعباء", callback_data=f"rb|c|{iso}")]]
         ags = agr.agreements_for(iso, direction="export")
         last = [Btn("📦 تفاصيل البند", callback_data=f"d|{line}")]
         if ags:
@@ -524,9 +557,9 @@ class CustomsService:
         if not items:
             return Reply(fmt.search_results(query, [], 0, 0, hint), state=state)
         if iso:
-            action, suffix = ("oc" if direction == "i" else "ox"), f"|{iso}"
+            action, suffix = {"i": "oc", "e": "ox", "b": "ob"}.get(direction, "ox"), f"|{iso}"
         else:
-            action, suffix = ("oi" if direction == "i" else "oe"), ""
+            action, suffix = {"i": "oi", "e": "oe", "b": "ob"}.get(direction, "oe"), ""
         rows, row = [], []
         for i, it in enumerate(items[:PAGE], 1):
             row.append(Btn(f"{i}) {it.code}", callback_data=f"{action}|{it.code}{suffix}"))
@@ -538,8 +571,9 @@ class CustomsService:
         text = fmt.search_results(query, items[:PAGE], total, 0, hint)
         where = ""
         if iso:
-            where = (f" من {agr.country_name(iso)}" if direction == "i" else f" إلى {agr.country_name(iso)}")
-        doing = "الاستيراد" if direction == "i" else "التصدير"
+            where = {"i": f" من {agr.country_name(iso)}", "b": f" في {agr.country_name(iso)}"}.get(
+                direction, f" إلى {agr.country_name(iso)}")
+        doing = {"i": "الاستيراد", "b": "جمارك المشتري"}.get(direction, "التصدير")
         text = text.replace("اضغط رقم البند للتفاصيل، أو ابعت: <code>البند القيمة</code> للحساب.",
                             f"اضغط رقم البند علشان أكمّل {doing}{html_escape(where)}.")
         return Reply(text, InlineKeyboardMarkup(rows), state=state)
@@ -576,6 +610,185 @@ class CustomsService:
                      InlineKeyboardMarkup([[Btn("📚 كل الاتفاقيات", callback_data="ol")]]))
 
     # ------------------------------------------------------------------- GPC
+    # ------------------------------------------------------------ buyer's import duty (WITS / TRAINS)
+    BUYER_QUICK = ("EU", "GB", "SA", "AE", "KE", "NG", "MA", "ZA", "TR")
+
+    def ask_buyer_product(self) -> Reply:
+        return Reply("🌍 <b>جمارك المشتري</b> — بضاعتك هتدفع كام جمارك في بلد العميل، مقارنة بالمنافسين.\n\n"
+                     "ابعت رقم البند (6 أرقام على الأقل) أو اسم المنتج.\n"
+                     "مثال: <code>071333</code> أو <code>ينسون</code>",
+                     state={"origin": {"dir": "b", "await": "code"}, "rebate": None})
+
+    def ask_buyer_country(self, code: str) -> Reply:
+        code = re.sub(r"\D", "", code or "")
+        buttons = [Btn(f"{agr.country_flag(c)} {agr.country_name(c)}", callback_data=f"ob|{code}|{c}")
+                   for c in self.BUYER_QUICK]
+        rows = [buttons[i: i + 3] for i in range(0, len(buttons), 3)]
+        return Reply(f"🌍 المشتري في أنهي بلد؟ (البند <code>{code}</code>)\n"
+                     "اختار من الزراير أو اكتب اسم البلد (مثال: إيطاليا، كينيا، نيجيريا).",
+                     InlineKeyboardMarkup(rows),
+                     state={"origin": {"dir": "b", "code": code, "await": "country"}, "rebate": None})
+
+    async def buyer_intent(self, intent: Intent) -> Reply:
+        if intent.code and intent.country:
+            return await self.buyer_duty(intent.code, intent.country)
+        if intent.code:
+            return self.ask_buyer_country(intent.code)
+        if intent.query:
+            return self.origin_search(intent.query, "b", intent.country)
+        return self.ask_buyer_product()
+
+    async def buyer_duty(self, code: str, iso: str) -> Reply:
+        digits = re.sub(r"\D", "", code or "")
+        if len(digits) < 6:
+            items, _ = self.ref.by_prefix(digits, 8, 0) if len(digits) >= 4 else ([], 0)
+            if not items:
+                return Reply("ابعت البند 6 أرقام على الأقل (مثال: <code>071333</code>).")
+            rows = [[Btn(f"{it.code}", callback_data=f"ob|{it.code}|{iso}")] for it in items[:6]]
+            text = "\n".join([f"البند <code>{digits}</code> تحته كذا بند — اختار:"] +
+                             [f"<code>{it.code}</code> {html_escape(fmt.short(it.short_ar, 60))}" for it in items[:6]])
+            return Reply(text, InlineKeyboardMarkup(rows))
+        hs6 = digits[:6]
+        if wits.reporter_for(iso) is None:
+            return Reply(f"مش لاقي {html_escape(agr.country_name(iso))} في قاعدة الجمارك العالمية (WITS).")
+        try:
+            cmp = await asyncio.wait_for(self.tariffs.compare(iso, hs6), timeout=120)
+        except (httpx.HTTPError, asyncio.TimeoutError, OSError) as exc:
+            return Reply(f"⚠️ مقدرتش أوصل لقاعدة الجمارك العالمية (WITS) دلوقتي ({type(exc).__name__}) — "
+                         "جرب كمان شوية.")
+        item = self.ref.get(digits) if len(digits) == 10 else None
+        if item is None:
+            items, _ = self.ref.by_prefix(hs6, 1, 0)
+            item = items[0] if items else None
+        text = wits.card(iso, hs6, item.desc_ar if item else None, cmp, agr.agreements_for(iso, direction="export"))
+        rows = [[Btn("🌐 بلد تاني", callback_data=f"ob|{digits}"), Btn("💰 رد الأعباء", callback_data=f"rb|c|{iso}")]]
+        if item is not None and len(item.code) == 10:
+            rows.append([Btn("📤 كارت التصدير", callback_data=f"ox|{item.code}|{iso}")])
+        return Reply(text, InlineKeyboardMarkup(rows), state={"origin": {"dir": "b", "code": digits}})
+
+    # ------------------------------------------------------------ export rebate (رد الأعباء)
+    REBATE_QUICK = ("KE", "NG", "MA", "ZA", "SD", "IT", "DE", "ES", "NL", "GB", "SA", "AE")
+
+    def rebate_start(self, iso: str | None = None) -> Reply:
+        if iso and iso in agr.COUNTRIES:
+            return self._rebate_ask_value({"iso": iso})
+        buttons = [Btn(f"{agr.country_flag(c)} {agr.country_name(c)}", callback_data=f"rb|c|{c}")
+                   for c in self.REBATE_QUICK]
+        rows = [buttons[i: i + 3] for i in range(0, len(buttons), 3)]
+        return Reply("💰 <b>رد الأعباء التصديرية</b> — هحسبلك الدعم المتوقع على شحنة حسب البرنامج الجديد "
+                     "(شحنات نوفمبر 2026 وبعدها).\n\nالشحنة رايحة لأنهي بلد؟ اختار أو اكتب الاسم.",
+                     InlineKeyboardMarkup(rows), state={"rebate": {"await": "country"}, "origin": None})
+
+    def _rebate_ask_value(self, st: dict) -> Reply:
+        iso = st["iso"]
+        target = "🎯 سوق مستهدف ✅" if rb.is_target(iso) else "🎯 مش سوق مستهدف"
+        return Reply(f"{agr.country_flag(iso)} {html_escape(agr.country_name(iso))} — {target}\n\n"
+                     "قيمة الشحنة (FOB) كام؟\nمثال: <code>50000$</code> أو <code>2500000</code> (بالجنيه)",
+                     state={"rebate": {**st, "await": "value"}, "origin": None})
+
+    @staticmethod
+    def _rebate_ask_mode(st: dict) -> Reply:
+        m = rb.MODES
+        kb = [[Btn(m["sea"], callback_data="rb|m|sea"), Btn(m["land"], callback_data="rb|m|land"),
+               Btn(m["air"], callback_data="rb|m|air")],
+              [Btn(m["roro"], callback_data="rb|m|roro"), Btn(m["none"], callback_data="rb|m|none")]]
+        return Reply("الشحن هيبقى إزاي؟", InlineKeyboardMarkup(kb), state={"rebate": {**st, "await": None}})
+
+    async def _to_egp(self, value: float, cur: str | None) -> tuple[float | None, str | None]:
+        if not cur or cur == "EGP":
+            return value, None
+        rate, note = await self.rate_for(cur)
+        if not rate:
+            return None, None
+        return value * rate, f"{value:,.0f} {cur} × {rate:g} ({note})"
+
+    async def rebate_answer(self, st: dict, text: str, user_id: int) -> Reply | None:
+        """An answer to the rebate questions. None = not an answer: handle the text normally."""
+        want = st.get("await")
+        if want == "country":
+            iso = agr.resolve_country(text)
+            if iso and iso in agr.COUNTRIES:
+                return self._rebate_ask_value({**st, "iso": iso})
+            if iso:
+                return Reply("اكتب البلد نفسها (مثلاً إيطاليا أو ألمانيا).", state={"rebate": st})
+            if re.sub(r"[\s/.\-]", "", text).isdigit() or len(text.split()) > 4:
+                return None
+            return Reply(f"مش لاقي بلد اسمها «{html_escape(text[:40])}» — اكتبها تاني أو اختار من الزراير.",
+                         state={"rebate": st})
+        if want in ("value", "freight", "inland", "ins"):
+            money = parse_money(text)
+            if money is None:
+                if len(text.split()) > 4:
+                    return None
+                return Reply("اكتب رقم — مثال: <code>50000$</code> أو <code>15000</code> (بالجنيه).",
+                             state={"rebate": st})
+            egp, note = await self._to_egp(*money)
+            if egp is None:
+                return Reply(f"مش لاقي سعر صرف لـ {money[1]} — اكتب المبلغ بالجنيه.", state={"rebate": st})
+            key = {"value": "fob", "freight": "freight", "inland": "inland", "ins": "ins"}[want]
+            st = {**st, key: egp, "await": None}
+            if want == "value":
+                st["value_note"] = note
+                return self._rebate_ask_mode(st)
+            return await self.rebate_card(st, user_id)
+        if want == "basic":
+            try:
+                v = float(_clean_text(text).replace("%", "").strip())
+            except ValueError:
+                v = -1
+            if not 0 < v <= 30:
+                return Reply("اكتب النسبة رقم بس — مثال: <code>4</code>", state={"rebate": st})
+            self.app.kv_set(f"rebate_basic:{user_id}", f"{v:g}")
+            return await self.rebate_card({**st, "basic": v, "await": None}, user_id)
+        return None
+
+    async def rebate_callback(self, st: dict, parts: list[str], user_id: int) -> Reply | None:
+        kind = parts[0] if parts else ""
+        arg = parts[1] if len(parts) > 1 else ""
+        if kind == "c":
+            return self.rebate_start(arg if arg in agr.COUNTRIES else None)
+        if kind == "new":
+            return self.rebate_start()
+        if not st.get("iso") or not st.get("fob"):
+            return self.rebate_start(st.get("iso"))
+        if kind == "m" and arg in rb.MODES:
+            st = {**st, "mode": arg}
+            if arg == "none":
+                return await self.rebate_card({**st, "freight": None}, user_id)
+            return Reply(f"تكلفة الشحن ({rb.MODES[arg]}) كام؟\nمثال: <code>2000$</code>",
+                         state={"rebate": {**st, "await": "freight"}})
+        if kind == "e":
+            if arg == "mode":
+                return self._rebate_ask_mode(st)
+            prompts = {"basic": "نسبة المساندة الأساسية لبندك كام %؟ (من المجلس التصديري أو صندوق تنمية الصادرات)\n"
+                                "مثال: <code>4</code>",
+                       "inland": "تكلفة النقل الداخلي للشحنة كام؟ (بالجنيه أو $)",
+                       "ins": "قيمة بوليصة التأمين على الشحنة كام؟"}
+            if arg in prompts:
+                return Reply(prompts[arg], state={"rebate": {**st, "await": arg}})
+        if kind == "u":
+            return await self.rebate_card({**st, "upper": not st.get("upper")}, user_id)
+        return None
+
+    async def rebate_card(self, st: dict, user_id: int) -> Reply:
+        if not st.get("iso") or not st.get("fob"):
+            return self.rebate_start(st.get("iso"))
+        basic = st.get("basic")
+        if basic is None:
+            saved = self.app.kv_get(f"rebate_basic:{user_id}")
+            basic = float(saved) if saved else None
+        sh = rb.Shipment(iso=st["iso"], fob_egp=st["fob"], basic_rate=basic, mode=st.get("mode") or "none",
+                         freight_egp=st.get("freight"), inland_egp=st.get("inland"), insurance_egp=st.get("ins"),
+                         upper_egypt=bool(st.get("upper")))
+        res = rb.compute(sh)
+        usd, _ = await self.rate_for("USD")
+        text = rb.card(sh, res, usd, st.get("value_note"))
+        kb = [[Btn("✏️ نسبة المساندة", callback_data="rb|e|basic"), Btn("🚢 طريقة الشحن", callback_data="rb|e|mode")],
+              [Btn("🚚 نقل داخلي", callback_data="rb|e|inland"), Btn("🛡️ تأمين", callback_data="rb|e|ins")],
+              [Btn(("✅ " if st.get("upper") else "") + "إنتاج صعيد/حدودية", callback_data="rb|u"),
+               Btn("🔁 شحنة جديدة", callback_data="rb|new")]]
+        return Reply(text, InlineKeyboardMarkup(kb), state={"rebate": {**st, "await": None, "basic": basic}})
+
     def gpc_code(self, code: str) -> Reply:
         b = self.ref.gpc_get(code)
         if not b:

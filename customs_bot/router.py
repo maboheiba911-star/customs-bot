@@ -66,7 +66,7 @@ EXPORT_PREFIX = re.compile(r"^\s*(?:/?export|تصدير|صادر|متطلبات 
 @dataclass
 class Intent:
     kind: str                      # calc | code | search | gpc | gpc_code | export | empty
-                                   # origin | import_from | export_to | agreement
+                                   # origin | import_from | export_to | agreement | rebate | buyer
     code: str = ""
     value: float | None = None
     currency: str = "EGP"
@@ -243,6 +243,58 @@ def _product_intent(kind: str, tokens: list[str], country: str | None = None) ->
     return intent
 
 
+REBATE_LEADS = {normalize(w) for w in ("رد", "/rebate", "rebate")}
+REBATE_SECOND = {normalize(w) for w in ("الأعباء", "اعباء", "أعباء", "الاعباء")}
+SUPPORT_SECOND = {normalize(w) for w in ("التصدير", "تصدير", "الصادرات", "صادرات")}
+REBATE_TAIL = {normalize(w) for w in ("التصديرية", "التصدير", "الصادرات", "تصديرية")}
+BUYER_LEAD = {normalize(w) for w in ("جمارك",)}
+BUYER_SECOND = {normalize(w) for w in ("المشتري", "مشتري", "المستورد", "العميل")}
+IN_WORDS = TO_WORDS | {"في", "فى", "in"}
+
+
+def _trailing_country(tokens: list[str]) -> tuple[list[str], str | None]:
+    """'<product or code> <country>' without a preposition: the country is the last 1-3 words."""
+    before, iso, _ = _split_country(tokens, IN_WORDS, attached=True)
+    if iso:
+        return before, iso
+    for j in (3, 2, 1):
+        if len(tokens) >= j:
+            iso = resolve_country(" ".join(tokens[-j:]))
+            if iso:
+                return tokens[:-j], iso
+    return tokens, None
+
+
+def _rebate_or_buyer(words: list[str]) -> Intent | None:
+    n = [normalize(w) for w in words[:3]]
+    rest: list[str] | None = None
+    if n[0] in ("/rebate", "rebate"):
+        rest = words[1:]
+    elif n[0] == "رد" and len(n) > 1 and n[1] in REBATE_SECOND:
+        rest = words[3:] if len(n) > 2 and n[2] in REBATE_TAIL else words[2:]
+    elif n[0] == "دعم" and len(n) > 1 and n[1] in SUPPORT_SECOND:
+        rest = words[2:]
+    if rest is not None:
+        _, iso = _trailing_country(rest) if rest else ([], None)
+        return Intent(kind="rebate", country=iso, query=" ".join(rest).strip())
+    lead = None
+    if n[0] in ("/buyer", "buyer"):
+        lead = 1
+    elif n[0] in BUYER_LEAD and len(n) > 1 and n[1] in BUYER_SECOND:
+        lead = 2
+    elif n[0] in BUYER_LEAD and len(n) > 2 and n[1] == "بلد" and n[2] in BUYER_SECOND:
+        lead = 3
+    if lead is None:
+        return None
+    before, iso = _trailing_country(words[lead:])
+    intent = Intent(kind="buyer", country=iso)
+    if before and is_code_token(before[0]):
+        intent.code = re.sub(r"\D", "", before[0])
+    else:
+        intent.query = " ".join(before).strip()
+    return intent
+
+
 def parse(text: str, *, mode: str | None = None, pending_code: str | None = None) -> Intent:
     t = _clean(text)
     if not t:
@@ -252,6 +304,9 @@ def parse(text: str, *, mode: str | None = None, pending_code: str | None = None
     n0 = normalize(words[0])
     if n0 in AGREEMENT_WORDS:
         return Intent(kind="agreement", query=" ".join(words[1:]).strip())
+    special = _rebate_or_buyer(words)
+    if special is not None:
+        return special
     if n0 in ("افضل", "احسن") and len(words) > 1 and normalize(words[1]) in ORIGIN_WORDS:
         return _product_intent("origin", words[2:])
     if n0 in ORIGIN_WORDS or (n0 in IMPORT_WORDS and len(words) == 1):

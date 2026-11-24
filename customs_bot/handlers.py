@@ -49,8 +49,9 @@ BTN_SEARCH, BTN_CALC, BTN_GS1, BTN_FX, BTN_HELP = (
     "🔎 بحث عن بند", "🧮 حساب الجمارك", "🧱 تصنيف GS1", "💱 أسعار الصرف", "❓ المساعدة",
 )
 BTN_ORIGIN = "🌍 الاتفاقيات والمنشأ"
-MENU = ReplyKeyboardMarkup([[BTN_SEARCH, BTN_CALC], [BTN_ORIGIN], [BTN_GS1, BTN_FX], [BTN_HELP]],
-                           resize_keyboard=True)
+BTN_BUYER, BTN_REBATE = "🌍 جمارك المشتري", "💰 رد الأعباء"
+MENU = ReplyKeyboardMarkup([[BTN_SEARCH, BTN_CALC], [BTN_ORIGIN], [BTN_BUYER, BTN_REBATE], [BTN_GS1, BTN_FX],
+                            [BTN_HELP]], resize_keyboard=True)
 MODE_PROMPTS = {
     BTN_SEARCH: ("hs", "🔎 ابعت اسم المنتج (عربي أو إنجليزي) أو رقم البند."),
     BTN_CALC: ("calc", "🧮 ابعت رقم البند + القيمة CIF بالجنيه.\nمثال: <code>0713330090 250000</code>\n"
@@ -130,6 +131,11 @@ def split_message(text: str, limit: int = 3900) -> list[str]:
 async def send(update: Update, context: ContextTypes.DEFAULT_TYPE, reply: Reply, *, edit: bool = False) -> None:
     for k, v in reply.state.items():
         context.user_data[k] = v
+    # one question at a time: a new question cancels the other flow's pending one
+    if isinstance(reply.state.get("origin"), dict) and reply.state["origin"].get("await"):
+        context.user_data["rebate"] = None
+    if isinstance(reply.state.get("rebate"), dict) and reply.state["rebate"].get("await"):
+        context.user_data["origin"] = None
     if not reply.text:
         return
     chunks = split_message(reply.text)
@@ -217,6 +223,20 @@ async def cmd_origin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await handle_text(update, context, "منشأ " + text)
 
 
+async def cmd_buyer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = " ".join(context.args or [])
+    if not text:
+        context.user_data.pop("mode", None)
+        await send(update, context, svc(context).ask_buyer_product())
+        return
+    await handle_text(update, context, "جمارك المشتري " + text)
+
+
+async def cmd_rebate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data.pop("mode", None)
+    await send(update, context, svc(context).rebate_start(resolve_country(" ".join(context.args or [])) or None))
+
+
 async def cmd_agreements(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await send(update, context, svc(context).agreements_reply(" ".join(context.args or [])))
 
@@ -248,12 +268,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text: 
         mode, prompt = MODE_PROMPTS[text]
         ud["mode"] = mode
         ud["origin"] = None
+        ud["rebate"] = None
         if mode != "calc":
             ud.pop("pending_code", None)
         await send(update, context, Reply(prompt))
         return
     if text == BTN_ORIGIN:
         ud.pop("mode", None)
+        ud["rebate"] = None
         await send(update, context, s.origin_menu())
         return
     if text == BTN_FX:
@@ -262,6 +284,23 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text: 
     if text == BTN_HELP:
         await cmd_help(update, context)
         return
+    if text == BTN_BUYER:
+        ud.pop("mode", None)
+        await send(update, context, s.ask_buyer_product())
+        return
+    if text == BTN_REBATE:
+        ud.pop("mode", None)
+        await send(update, context, s.rebate_start())
+        return
+
+    rst = ud.get("rebate")
+    if forced_mode is None and isinstance(rst, dict) and rst.get("await"):
+        reply = await s.rebate_answer(rst, text, user_id)
+        if reply is not None:
+            _track(update, context, "rebate", text)
+            await send(update, context, reply)
+            return
+        ud["rebate"] = None
 
     st = ud.get("origin")
     if forced_mode is None and isinstance(st, dict) and st.get("await"):
@@ -298,6 +337,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text: 
     elif intent.kind in ("origin", "import_from", "export_to", "agreement"):
         ud.pop("mode", None)
         reply = await s.origin_intent(intent)
+    elif intent.kind == "buyer":
+        ud.pop("mode", None)
+        reply = await s.buyer_intent(intent)
+    elif intent.kind == "rebate":
+        ud.pop("mode", None)
+        reply = s.rebate_start(intent.country)
     elif intent.kind == "gpc":
         reply = s.gpc_search(intent.query)
     elif intent.kind == "gpc_code":
@@ -315,6 +360,8 @@ async def _origin_followup(s: CustomsService, ud: dict, st: dict, text: str) -> 
         iso = resolve_country(text)
         if iso:
             ud["origin"] = {**st, "await": None}
+            if st.get("dir") == "b":
+                return await s.buyer_duty(st.get("code", ""), iso)
             if st.get("dir") == "e":
                 return await s.export_to(st.get("code", ""), iso)
             return await s.import_from(st.get("code", ""), iso, st.get("value"), qty=st.get("qty"),
@@ -328,6 +375,8 @@ async def _origin_followup(s: CustomsService, ud: dict, st: dict, text: str) -> 
         intent = router.parse(text)
         direction = st.get("dir", "i")
         if intent.kind in ("code", "calc") and intent.code:
+            if direction == "b":
+                return s.ask_buyer_country(intent.code)
             if direction == "e":
                 return s.ask_country("e", intent.code)
             return await s.best_origin(intent.code, intent.value if intent.kind == "calc" else None)
@@ -387,6 +436,12 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await send(update, context, await s.calculate_code(
             arg, pending["value"], currency_note=pending.get("currency_note"), qty=pending.get("qty"),
             origin=pending.get("origin"), personal=pending.get("personal", False), country=pending.get("country")))
+    elif action == "rb":
+        uid = update.effective_user.id if update.effective_user else 0
+        st = ud.get("rebate") if isinstance(ud.get("rebate"), dict) else {}
+        reply = await s.rebate_callback(st, arg.split("|"), uid)
+        if reply is not None:
+            await send(update, context, reply)
     elif action.startswith("o"):
         await _origin_callback(update, context, s, ud, action, arg)
 
@@ -415,6 +470,11 @@ async def _origin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, s
                                     qty=qty, personal=personal)
     elif action == "ox" and len(parts) >= 2 and _iso(parts[1]):
         reply = await s.export_to(code, parts[1])
+    elif action == "ob":
+        if len(parts) >= 2 and _iso(parts[1]):
+            reply = await s.buyer_duty(code, parts[1])
+        elif code:
+            reply = s.ask_buyer_country(code)
     elif action == "ol":
         reply = s.agreements_reply()
     elif action == "oa":
@@ -1475,6 +1535,8 @@ def register(app: Application) -> None:
     app.add_handler(CommandHandler("backup", cmd_backup))
     app.add_handler(CommandHandler("shutdown", cmd_shutdown))
     app.add_handler(CommandHandler("agreements", cmd_agreements))
+    app.add_handler(CommandHandler("buyer", cmd_buyer))
+    app.add_handler(CommandHandler("rebate", cmd_rebate))
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("setfx", cmd_setfx))
     app.add_handler(CommandHandler("devfee", cmd_devfee))
