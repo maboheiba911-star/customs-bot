@@ -268,3 +268,29 @@ def test_token_with_a_space_from_copying_on_the_phone():
     tok = "1234567890:TEST-not-a-real-token-xxxxxxxxxxxx"
     assert w.find_token(tok[:20] + " " + tok[20:]) == tok
     assert w.find_token("  " + tok + "\n") == tok
+
+
+def test_token_is_kept_when_only_the_network_is_slow(monkeypatch, tmp_path):
+    sys.path.insert(0, str(ROOT / "tools"))
+    import setup_wizard as w
+
+    monkeypatch.setattr(w, "ENV", tmp_path / ".env")
+    monkeypatch.setattr("builtins.input", lambda prompt="": "1234567890:TEST-not-a-real-token-xxxxxxxxxxxx")
+    monkeypatch.setattr(w, "check_token", lambda tok: (False, w.NETWORK_PREFIX + " (ReadTimeout) — اتأكد من النت"))
+    assert w.run_token_only() == 0
+    assert "TELEGRAM_BOT_TOKEN=" in (tmp_path / ".env").read_text()
+
+
+def test_fetch_backup_survives_network_errors(monkeypatch, tmp_path):
+    sys.path.insert(0, str(ROOT / "tools"))
+    import fetch_backup
+
+    import socket
+    monkeypatch.setattr(socket, "getaddrinfo", socket.getaddrinfo)          # undo ipv4_only() after the test
+    monkeypatch.setattr(fetch_backup, "API", "http://127.0.0.1:9")          # nothing listens there
+    monkeypatch.setattr(fetch_backup.time, "sleep", lambda s: None)
+    clock = iter(range(0, 10_000, 30))
+    monkeypatch.setattr(fetch_backup.time, "time", lambda: next(clock))
+    said = []
+    assert fetch_backup.wait_for_backup("123:ABC", tmp_path, minutes=2, poll=1, say=said.append) is False
+    assert any("الداتا" in s for s in said)

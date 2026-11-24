@@ -29,15 +29,25 @@ def find_token(text: str) -> str | None:
     return m.group(1) if m else None
 
 
-def check_token(token: str) -> tuple[bool, str]:
-    """Ask Telegram who this token belongs to. -> (ok, @username or error)."""
+NETWORK_PREFIX = "مش قادر أوصل لتليجرام"
+
+
+def check_token(token: str, tries: int = 3) -> tuple[bool, str]:
+    """Ask Telegram who this token belongs to. -> (ok, @username or error). Retries a slow network."""
     import httpx
 
-    try:
-        r = httpx.get(f"https://api.telegram.org/bot{token}/getMe", timeout=20)
-        data = r.json()
-    except Exception as exc:          # no internet, DNS, TLS ...
-        return False, f"مش قادر أوصل لتليجرام ({type(exc).__name__}) — اتأكد من النت"
+    data = None
+    for i in range(tries):
+        try:
+            r = httpx.get(f"https://api.telegram.org/bot{token}/getMe", timeout=30)
+            data = r.json()
+            break
+        except Exception as exc:          # no internet, DNS, TLS, a network that stalls Telegram ...
+            err = exc
+            if i + 1 < tries:
+                time.sleep(3)
+    if data is None:
+        return False, f"{NETWORK_PREFIX} ({type(err).__name__}) — اتأكد من النت"
     if data.get("ok"):
         return True, "@" + data["result"].get("username", "")
     return False, "التوكن مش صحيح — انسخه تاني من BotFather"
@@ -265,6 +275,10 @@ def run_token_only() -> int:
         if ok:
             write_env({"TELEGRAM_BOT_TOKEN": tok})
             print(f"✅ التوكن شغال ({info})")
+            return 0
+        if info.startswith(NETWORK_PREFIX):     # the token looks right; only the network is slow — go on
+            write_env({"TELEGRAM_BOT_TOKEN": tok})
+            print("⚠️ النت مش واصل لتليجرام دلوقتي، فحفظت التوكن وهكمّل (لو فضلت المشكلة: جرّب الداتا بدل الواي فاي).")
             return 0
         print("✖ " + info)
     return 1
