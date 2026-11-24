@@ -17,19 +17,48 @@ fail() { printf '\n\033[1;31m✖ %s\033[0m\n' "$1"; exit 1; }
 
 # ------------------------------------------------------------------ 1) packages
 say "1/6 تجهيز Termux (أول مرة بياخد كام دقيقة — سيبه يكمّل)"
+case "${TERMUX_VERSION:-}" in
+  googleplay*) fail "دي نسخة Termux بتاعة جوجل بلاي: مش بتشتغل مع Termux:Boot وسيرفرها ممكن يبقى مقفول. امسحها ونزّل نسخة F-Droid: https://f-droid.org/repo/com.termux_1022.apk" ;;
+esac
+
 # أول ما Termux يتفتح بيحدّث نفسه في الخلفية وبيقفل الـ apt لحد ما يخلص — نستنى بدل ما نفشل
-retry() {
+update_lists() {
   for i in $(seq 1 18); do
-    "$@" && return 0
-    echo "⏳ Termux لسه بيجهّز نفسه — هستنى 10 ثواني وأجرب تاني ($i/18)"
-    sleep 10
+    rc=0; out="$(pkg update -y -o Dpkg::Options::=--force-confnew 2>&1)" || rc=$?
+    if printf '%s' "$out" | grep -q "Could not get lock"; then
+      echo "⏳ Termux لسه بيجهّز نفسه — هستنى 10 ثواني وأجرب تاني ($i/18)"; sleep 10; continue
+    fi
+    printf '%s\n' "$out" | tail -n 2
+    return $rc
   done
   return 1
 }
-retry pkg update -y -o Dpkg::Options::=--force-confnew || fail "تحديث Termux فشل — صوّر الشاشة وابعتها لـ Claude."
-retry pkg upgrade -y -o Dpkg::Options::=--force-confnew || true
-retry pkg install -y python curl termux-tools || fail "تسطيب بايثون فشل — صوّر الشاشة وابعتها لـ Claude."
-python -m pip --version >/dev/null 2>&1 || retry pkg install -y python-pip
+has_python() { apt-cache policy python 2>/dev/null | grep -q 'Candidate: [0-9]'; }
+# سيرفر الحزم الافتراضي ممكن يبقى مقفول على بعض الشبكات — نجرّب السيرفرات التانية لحد ما واحد يرد
+pick_mirror() {
+  for f in "$PREFIX"/etc/termux/mirrors/*/*; do
+    [ -f "$f" ] || continue
+    main="$(sed -n 's/^MAIN="\(.*\)"$/\1/p' "$f")"
+    [ -n "$main" ] || continue
+    echo "… بجرب سيرفر: $main"
+    if curl -fsS --max-time 15 -o /dev/null "$main/dists/stable/Release"; then
+      echo "deb $main stable main" > "$PREFIX/etc/apt/sources.list"
+      ln -sfn "$f" "$PREFIX/etc/termux/chosen_mirrors"
+      echo "✅ هنستخدم السيرفر ده"
+      return 0
+    fi
+  done
+  return 1
+}
+update_lists || true
+if ! has_python; then
+  warn "سيرفر الحزم مش بيرد — هدوّر على سيرفر تاني"
+  pick_mirror && update_lists || true
+fi
+has_python || fail "مقدرتش أوصل لأي سيرفر حزم من الشبكة دي. جرّب تبدّل (واي فاي ⇄ داتا) وشغّل الأمر تاني."
+pkg upgrade -y -o Dpkg::Options::=--force-confnew >/dev/null 2>&1 || true
+pkg install -y python curl termux-tools || fail "تسطيب بايثون فشل — صوّر الشاشة وابعتها لـ Claude."
+python -m pip --version >/dev/null 2>&1 || pkg install -y python-pip
 
 # ------------------------------------------------------------------ 2) storage permission
 say "2/6 إذن الملفات — لو ظهرت رسالة اضغط «سماح / Allow»"
