@@ -232,6 +232,10 @@ async def cmd_buyer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await handle_text(update, context, "جمارك المشتري " + text)
 
 
+async def cmd_cn(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await send(update, context, svc(context).cn_reply(" ".join(context.args or [])))
+
+
 async def cmd_rebate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.pop("mode", None)
     await send(update, context, svc(context).rebate_start(resolve_country(" ".join(context.args or [])) or None))
@@ -343,6 +347,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text: 
     elif intent.kind == "rebate":
         ud.pop("mode", None)
         reply = s.rebate_start(intent.country)
+    elif intent.kind == "cn":
+        reply = s.cn_reply(intent.code)
     elif intent.kind == "gpc":
         reply = s.gpc_search(intent.query)
     elif intent.kind == "gpc_code":
@@ -1537,6 +1543,7 @@ def register(app: Application) -> None:
     app.add_handler(CommandHandler("agreements", cmd_agreements))
     app.add_handler(CommandHandler("buyer", cmd_buyer))
     app.add_handler(CommandHandler("rebate", cmd_rebate))
+    app.add_handler(CommandHandler("cn", cmd_cn))
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("setfx", cmd_setfx))
     app.add_handler(CommandHandler("devfee", cmd_devfee))

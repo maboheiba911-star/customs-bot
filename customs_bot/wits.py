@@ -226,6 +226,22 @@ def _pct(v: float | None) -> str:
     return "—" if v is None else f"{v:g}%"
 
 
+def eu_lines(hs6: str, limit: int = 6) -> list[str]:
+    """The EU 8-digit codes under an HS 6 code, ready to put on the invoice for an EU buyer."""
+    from html import escape
+
+    from . import cn2026
+    cns = cn2026.lines(hs6)
+    if not cns:
+        return []
+    out = [f"🏷️ <b>البند في أوروبا ({cn2026.VERSION})</b> — اكتبه في الفاتورة للمشتري الأوروبي:"]
+    for code, desc in cns[:limit]:
+        out.append(f"• <code>{cn2026.fmt(code)}</code> — {escape(desc[:120])}")
+    if len(cns) > limit:
+        out.append(f"• و{len(cns) - limit} بند تاني — ابعت <code>بند اوروبا {hs6}</code>")
+    return out
+
+
 def card(iso: str, hs6: str, desc: str | None, cmp: dict | None, ags: list) -> str:
     """Egypt vs MFN vs competitors in the buyer's market, with the sales argument and the certificate."""
     from html import escape
@@ -280,6 +296,8 @@ def card(iso: str, hs6: str, desc: str | None, cmp: dict | None, ags: list) -> s
         else:
             L.append(f"ℹ️ مصر ليها اتفاقية مع البلد دي ({escape(main.name)})، بس WITS مفيهوش سعر تفضيلي للبند ده "
                      f"لسنة {year}: يا إما البند مستثنى، يا إما البيانات ناقصة — اتأكد.")
+    if eu:
+        L += eu_lines(hs6)
     na = max([mfn.na_lines] + ([eg.na_lines] if eg else []))
     if na:
         L.append(f"⚠️ فيه {na} بند تحت الـ 6 أرقام عليه رسوم نوعية (بالكيلو مثلاً) ومش داخلة في المتوسط.")

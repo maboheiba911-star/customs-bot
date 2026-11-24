@@ -253,3 +253,30 @@ async def test_wits_no_data_is_rechecked_sooner_and_5xx_is_an_error():
                              now=lambda: NOW)
     with pytest.raises(httpx.HTTPStatusError):
         await down.compare("KE", "100790")
+
+
+# ------------------------------------------------------------------ EU 8-digit codes (CN 2026)
+def test_cn2026_data():
+    from customs_bot import cn2026
+    codes = [c for c, _ in cn2026.lines("0713330090")]
+    assert codes == ["07133310", "07133390"]
+    assert cn2026.lines("100790") == [("10079000", "Grain sorghum (excl. for sowing)")]
+    assert cn2026.lines("090961")[0][0] == "09096100" and cn2026.lines("999999") == []
+    assert cn2026.fmt("07133390") == "0713 33 90"
+    assert router.parse("بند اوروبا 071333").kind == "cn" and router.parse("/cn 0909610000").code == "0909610000"
+
+
+async def test_cn_in_the_bot(app_and_tg):
+    app, tg = app_and_tg
+    svc = app.bot_data["svc"]
+    svc.tariffs.transport = fake_wits(EU_TABLE)
+    svc.tariffs.now = lambda: NOW
+    await send(app, msg_update("بند اوروبا 071333"))
+    t = tg.last_text()
+    assert "0713 33 90" in t and "CN 2026" in t and "CC BY 4.0" in t
+    await send(app, msg_update("جمارك المشتري 071333 إيطاليا"))
+    assert "البند في أوروبا" in tg.last_text() and "0713 33 90" in tg.last_text()
+    await send(app, msg_update("تصدير 0713330090 إلى ألمانيا"))
+    assert "0713 33 90" in tg.last_text()
+    await send(app, msg_update("تصدير 0713330090 إلى السعودية"))
+    assert "البند في أوروبا" not in tg.last_text()

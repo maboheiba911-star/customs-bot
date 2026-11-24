@@ -533,6 +533,10 @@ class CustomsService:
         if item is None:
             return Reply(f"❌ البند <code>{line}</code> مش موجود في التعريفة.")
         text = origin_mod.export_card(item, instr, source or fmt.source_line(item, self.snapshot), iso)
+        if iso == "EU" or iso in agr.EU:
+            eu = wits.eu_lines(line, limit=4)
+            if eu:
+                text += "\n\n" + "\n".join(eu)
         rows = [[Btn("🌐 بلد تاني", callback_data=f"oq|e|{line}"), Btn("📥 الاستيراد", callback_data=f"oi|{line}")],
                 [Btn("🌍 جمارك المشتري", callback_data=f"ob|{line}|{iso}"),
                  Btn("💰 رد الأعباء", callback_data=f"rb|c|{iso}")]]
@@ -665,6 +669,24 @@ class CustomsService:
         if item is not None and len(item.code) == 10:
             rows.append([Btn("📤 كارت التصدير", callback_data=f"ox|{item.code}|{iso}")])
         return Reply(text, InlineKeyboardMarkup(rows), state={"origin": {"dir": "b", "code": digits}})
+
+    def cn_reply(self, code: str) -> Reply:
+        """The EU 8-digit codes (CN 2026) under an HS 6 code."""
+        from . import cn2026
+        digits = re.sub(r"\D", "", code or "")
+        if len(digits) < 6:
+            return Reply("ابعت البند 6 أرقام على الأقل — مثال: <code>بند اوروبا 071333</code>")
+        cns = cn2026.lines(digits)
+        if not cns:
+            return Reply(f"مش لاقي البند <code>{digits[:6]}</code> في التعريفة الأوروبية {cn2026.VERSION}.")
+        L = [f"🏷️ <b>البند {digits[:6]} في أوروبا ({cn2026.VERSION})</b>",
+             f"<i>{html_escape(cn2026.title(digits))}</i>", ""]
+        for c, d in cns[:40]:
+            L.append(f"• <code>{cn2026.fmt(c)}</code> — {html_escape(d[:140])}")
+        L += ["", "اكتب البند الأوروبي المناسب في الفاتورة للمشتري الأوروبي، وهو بيكمّله لـ 10 أرقام (TARIC) عنده.",
+              f"<i>{html_escape(cn2026.SOURCE)}</i>"]
+        rows = [[Btn("🌍 جمارك المشتري في أوروبا", callback_data=f"ob|{digits}|EU")]]
+        return Reply("\n".join(L), InlineKeyboardMarkup(rows))
 
     # ------------------------------------------------------------ export rebate (رد الأعباء)
     REBATE_QUICK = ("KE", "NG", "MA", "ZA", "SD", "IT", "DE", "ES", "NL", "GB", "SA", "AE")

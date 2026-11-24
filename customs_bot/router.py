@@ -66,7 +66,7 @@ EXPORT_PREFIX = re.compile(r"^\s*(?:/?export|تصدير|صادر|متطلبات 
 @dataclass
 class Intent:
     kind: str                      # calc | code | search | gpc | gpc_code | export | empty
-                                   # origin | import_from | export_to | agreement | rebate | buyer
+                                   # origin | import_from | export_to | agreement | rebate | buyer | cn
     code: str = ""
     value: float | None = None
     currency: str = "EGP"
@@ -265,8 +265,15 @@ def _trailing_country(tokens: list[str]) -> tuple[list[str], str | None]:
     return tokens, None
 
 
+EU_WORDS = {normalize(w) for w in ("أوروبا", "اوروبا", "الأوروبي", "الاوروبي", "أوروبي", "اوروبي", "الأوروبية")}
+
+
 def _rebate_or_buyer(words: list[str]) -> Intent | None:
     n = [normalize(w) for w in words[:3]]
+    if n[0] in ("/cn", "cn") or (n[0] in ("بند", "البند", "كود") and len(n) > 1 and n[1] in EU_WORDS):
+        rest = words[1:] if n[0] in ("/cn", "cn") else words[2:]
+        code = next((re.sub(r"\D", "", w) for w in rest if is_code_token(w)), "")
+        return Intent(kind="cn", code=code, query=" ".join(rest).strip())
     rest: list[str] | None = None
     if n[0] in ("/rebate", "rebate"):
         rest = words[1:]

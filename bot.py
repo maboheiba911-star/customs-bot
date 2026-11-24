@@ -140,6 +140,8 @@ def selftest() -> int:
             assert round(res.total) == 100_000, res.total
             assert "رد الأعباء" in svc.rebate_start().text
             assert router.parse("جمارك المشتري 071333 إيطاليا").kind == "buyer"
+            from customs_bot import cn2026
+            assert ("07133390" in [c for c, _ in cn2026.lines("071333")]), "CN 2026 data"
         finally:
             await svc.live.close()
 
