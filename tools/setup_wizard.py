@@ -312,6 +312,7 @@ def run_check_saved() -> int:
     if not tok:
         return 1
     _apply_ipv4()
+    print("… بتأكد إن التوكن المحفوظ شغال")
     ok, info = check_token(tok)
     if ok:
         print(f"✅ التوكن المحفوظ شغال ({info})")

@@ -161,7 +161,7 @@ termux-wake-lock || true          # يمنع أندرويد ينيّم البو�
 ask_token
 if grep -q '^TELEGRAM_BOT_TOKEN=.\+' .env; then
   say "6/6 تشغيل البوت"
-  pkill -f "python bot.py" 2>/dev/null || true; sleep 2          # إعادة تشغيل بالكود الجديد
+  pkill -f 'customs-bot/bot[.]py|python bot[.]py' 2>/dev/null || true; sleep 2   # إعادة تشغيل بالكود الجديد
   python - <<'PY'
 import sys
 sys.path.insert(0, "tools")

@@ -14,6 +14,7 @@ import sys
 import time
 import urllib.error
 import urllib.parse
+import http.client
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -74,6 +75,19 @@ def unpack(blob: bytes, dest: Path) -> list[str]:
     return done
 
 
+def download(url: str, say=print, tries: int = 4) -> bytes | None:
+    """The 3 MB file over a shaky mobile connection: try a few times before giving up."""
+    for i in range(tries):
+        try:
+            with urllib.request.urlopen(url, timeout=120) as r:
+                return r.read()
+        except (OSError, ValueError, http.client.HTTPException):
+            if i + 1 < tries:
+                say("⏳ النت بطيء وانا بنزّل الملف — بجرب تاني…")
+                time.sleep(5)
+    return None
+
+
 def wait_for_backup(token: str, dest: Path, minutes: float = 15, poll: int = 30, say=print) -> bool:
     deadline = time.time() + minutes * 60
     offset = None
@@ -96,7 +110,7 @@ def wait_for_backup(token: str, dest: Path, minutes: float = 15, poll: int = 30,
                 say("⏳ البوت لسه شغال على الكمبيوتر — ابعتله من تليجرام: /shutdown yes")
                 told_conflict = True
             elif res.get("error_code") == 401:
-                say("✖ التوكن غلط.")
+                say("✖ تليجرام بيقول التوكن اتلغى (اتداس Revoke بعد ما اتحط). شغّل الأمر تاني والصق التوكن الجديد.")
                 return False
             time.sleep(5)
             continue
@@ -110,8 +124,10 @@ def wait_for_backup(token: str, dest: Path, minutes: float = 15, poll: int = 30,
             if not f.get("ok"):
                 say("✖ مقدرتش أنزّل الملف من تليجرام — ابعته تاني.")
                 continue
-            with urllib.request.urlopen(f"{API}/file/bot{token}/{f['result']['file_path']}", timeout=120) as r:
-                blob = r.read()
+            blob = download(f"{API}/file/bot{token}/{f['result']['file_path']}", say)
+            if blob is None:
+                say("✖ النت قطع وانا بنزّل الملف — ابعته (Forward) للبوت تاني.")
+                continue
             try:
                 names = unpack(blob, dest)
             except (zipfile.BadZipFile, ValueError) as exc:
@@ -146,9 +162,8 @@ def main() -> int:
     if not me.get("ok"):
         print("✖ مقدرتش أكلّم تليجرام بالتوكن ده: " + str(me.get("description", "")))
         return 1
-    print(f"\nدلوقتي في تليجرام (شات البوت @{me['result'].get('username', '')}):")
-    print("  1) ابعت للبوت:  /shutdown yes   (عشان يقف على الكمبيوتر)")
-    print("  2) دوسة طويلة على ملف customs-bot-data.zip ← Forward (إعادة توجيه) ← اختار نفس شات البوت")
+    print(f"\nدلوقتي في تليجرام، في شات البوت @{me['result'].get('username', '')}:")
+    print("  دوسة طويلة على ملف customs-bot-data.zip ← إعادة توجيه (Forward) ← اختار نفس شات البوت")
     print("مستني الملف…")
     return 0 if wait_for_backup(token, dest) else 1
 

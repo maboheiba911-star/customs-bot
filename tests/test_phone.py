@@ -401,3 +401,32 @@ def test_saved_token_is_checked_before_it_is_reused(monkeypatch, tmp_path):
     assert w.run_check_saved() == 1                                           # revoked -> ask again
     monkeypatch.setattr(w, "check_token", lambda tok: (False, w.NETWORK_PREFIX + " (ReadTimeout)"))
     assert w.run_check_saved() == 0                                           # can't tell -> keep it
+
+
+def test_fetch_backup_retries_a_broken_download(tmp_path, monkeypatch):
+    sys.path.insert(0, str(ROOT / "tools"))
+    import fetch_backup
+    import urllib.request
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.write(ROOT / "data" / "reference.db", "reference.db")
+    api = FakeTelegramAPI(buf.getvalue())
+    monkeypatch.setattr(fetch_backup, "API", api.url)
+    monkeypatch.setattr(fetch_backup.time, "sleep", lambda s: None)
+    real, broken = urllib.request.urlopen, []
+
+    def flaky(url, *a, **k):                       # the first file download dies halfway, like a weak signal
+        if "/file/" in str(url) and not broken:
+            broken.append(url)
+            raise TimeoutError("read timed out")
+        return real(url, *a, **k)
+
+    monkeypatch.setattr(urllib.request, "urlopen", flaky)
+    said = []
+    try:
+        assert fetch_backup.wait_for_backup("123:ABC", tmp_path, minutes=1, poll=1, say=said.append)
+    finally:
+        api.close()
+    assert broken and (tmp_path / "reference.db").stat().st_size > 1_000_000
+    assert any("بجرب تاني" in s for s in said)
