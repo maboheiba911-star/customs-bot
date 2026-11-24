@@ -146,6 +146,10 @@ def main() -> None:
         sys.exit(selftest())
     s = load_settings()
     setup_logging(s.data_dir)
+    if (os.getenv("FORCE_IPV4") or "").strip().lower() in ("1", "true", "yes"):
+        from customs_bot import net
+        net.prefer_ipv4()                     # networks that stall IPv6 to Telegram (set by the phone installer)
+        log.info("FORCE_IPV4: connecting over IPv4 only")
     if not s.token:
         log.error("TELEGRAM_BOT_TOKEN missing — run install_windows.bat (or copy .env.example to .env)")
         sys.exit("❌ TELEGRAM_BOT_TOKEN مش متسجل — شغّل install_windows.bat أو حط التوكن في ملف .env")

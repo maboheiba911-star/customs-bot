@@ -294,3 +294,43 @@ def test_fetch_backup_survives_network_errors(monkeypatch, tmp_path):
     said = []
     assert fetch_backup.wait_for_backup("123:ABC", tmp_path, minutes=2, poll=1, say=said.append) is False
     assert any("الداتا" in s for s in said)
+
+
+# ------------------------------------------------------------------ networks that stall IPv6 to Telegram
+def test_prefer_ipv4_keeps_only_ipv4_addresses(monkeypatch):
+    import socket
+    from customs_bot import net
+
+    fake = [(socket.AF_INET6, 1, 6, "", ("2001:db8::1", 443, 0, 0)), (socket.AF_INET, 1, 6, "", ("1.2.3.4", 443))]
+    monkeypatch.setattr(net, "_real_getaddrinfo", lambda *a, **k: fake)
+    monkeypatch.setattr(socket, "getaddrinfo", socket.getaddrinfo)       # restored after the test
+    net.prefer_ipv4()
+    assert [r[0] for r in socket.getaddrinfo("api.telegram.org", 443)] == [socket.AF_INET]
+    monkeypatch.setattr(net, "_real_getaddrinfo", lambda *a, **k: fake[:1])
+    assert socket.getaddrinfo("v6-only.example", 443) == fake[:1]       # nothing else to use: keep IPv6
+
+
+def test_net_check_turns_on_ipv4_when_that_reaches_telegram(monkeypatch, tmp_path, capsys):
+    import socket
+    sys.path.insert(0, str(ROOT / "tools"))
+    import net_check
+    import setup_wizard
+    from customs_bot import net
+
+    monkeypatch.setattr(socket, "getaddrinfo", socket.getaddrinfo)
+    monkeypatch.setattr(setup_wizard, "ENV", tmp_path / ".env")
+    answers = iter(["ok (200)", "ReadTimeout", "ok (302)"])                 # GitHub, Telegram, Telegram over IPv4
+    monkeypatch.setattr(net_check, "reach", lambda url, timeout=15: next(answers))
+    assert net_check.main() == 0
+    assert "FORCE_IPV4=1" in (tmp_path / ".env").read_text()
+    assert "IPv4" in capsys.readouterr().out
+    net.restore()
+
+
+def test_bot_uses_ipv4_when_asked(tmp_path):
+    shutil.copy2(ROOT / "data" / "reference.db", tmp_path / "reference.db")
+    (tmp_path / "STOPPED").write_text("x")                                  # exits right after the setup
+    env = dict(os.environ, DATA_DIR=str(tmp_path), FORCE_IPV4="1",
+               TELEGRAM_BOT_TOKEN="1234567890:TEST-not-a-real-token-xxxxxxxxxxxx")
+    subprocess.run([sys.executable, str(ROOT / "bot.py")], env=env, capture_output=True, text=True, timeout=60)
+    assert "FORCE_IPV4" in (tmp_path / "bot.log").read_text(encoding="utf-8")

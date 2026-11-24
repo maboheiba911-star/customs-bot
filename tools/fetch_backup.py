@@ -127,6 +127,9 @@ def wait_for_backup(token: str, dest: Path, minutes: float = 15, poll: int = 30,
 
 def main() -> int:
     dest = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "data"
+    env = ROOT / ".env"
+    if env.exists() and "FORCE_IPV4=1" in env.read_text(encoding="utf-8"):
+        ipv4_only()
     token = token_from_env()
     if not token:
         print("✖ التوكن مش موجود في .env")

@@ -263,6 +263,10 @@ def run_console() -> int:
 
 def run_token_only() -> int:
     """Ask for the token in the terminal, check it with Telegram and save it — nothing else (Termux)."""
+    if read_env().get("FORCE_IPV4", "").lower() in ("1", "true", "yes"):
+        sys.path.insert(0, str(ROOT))
+        from customs_bot import net
+        net.prefer_ipv4()
     for _ in range(5):
         try:
             tok = find_token(input("> "))
