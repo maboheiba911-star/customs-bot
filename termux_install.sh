@@ -62,11 +62,13 @@ python -m pip --version >/dev/null 2>&1 || pkg install -y python-pip
 
 # ------------------------------------------------------------------ 2) storage permission
 say "2/6 إذن الملفات — لو ظهرت رسالة اضغط «سماح / Allow»"
-if [ ! -d "$HOME/storage/shared" ]; then
+can_read() { ls "$HOME/storage/shared/" >/dev/null 2>&1; }     # الفولدر ممكن يبان من غير ما يكون فيه إذن قراءة
+if ! can_read; then
   termux-setup-storage || true
-  for _ in $(seq 1 60); do [ -d "$HOME/storage/shared" ] && break; sleep 1; done
+  echo "لو فتحتلك صفحة «السماح بإدارة كل الملفات» فعّل المفتاح وارجع هنا."
+  for _ in $(seq 1 120); do can_read && break; sleep 1; done
 fi
-[ -d "$HOME/storage/shared" ] || fail "محتاج إذن الملفات: افتح الإعدادات ← التطبيقات ← Termux ← الأذونات ← الملفات، وبعدين شغّل الأمر تاني."
+can_read || fail "Termux لسه مش واخد إذن الملفات: الإعدادات ← التطبيقات ← Termux ← الأذونات ← الملفات والوسائط ← اسمح (أو «السماح بإدارة كل الملفات»)، وبعدين شغّل الأمر تاني."
 
 # ------------------------------------------------------------------ 3) code
 say "3/6 تنزيل البوت من GitHub"
@@ -116,6 +118,8 @@ found = [f for p in places for f in glob.glob(os.path.join(home, p, "customs-bot
 if not found:
     found = glob.glob(os.path.join(home, "**", "customs-bot-data*.zip"), recursive=True)
 if not found:
+    zips = sorted(glob.glob(os.path.join(home, "Download", "**", "*.zip"), recursive=True))[-8:]
+    print("ملفات zip اللي لقيتها في التنزيلات:", *(zips or ["(ولا ملف)"]), sep="\n  ")
     sys.exit(1)
 src = max(found, key=os.path.getmtime)
 with zipfile.ZipFile(src) as z:
