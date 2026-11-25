@@ -69,6 +69,7 @@ def build_application(settings=None, *, builder: ApplicationBuilder | None = Non
             ("calc", "حساب الجمارك"), ("origin", "المنشأ والاتفاقيات"), ("export", "متطلبات التصدير"),
             ("agreements", "اتفاقيات مصر التجارية"), ("buyer", "جمارك بلد المشتري"),
             ("rebate", "رد الأعباء التصديرية"), ("ship", "ملف شحنة جديد"), ("ships", "شحناتي"),
+            ("watch", "مراقبة البنود"),
             ("gs1", "تصنيف GS1"),
             ("fx", "أسعار الصرف"), ("about", "مصادر البيانات"), ("version", "نسخة البوت والتحديث"),
         ])
@@ -146,6 +147,11 @@ def selftest() -> int:
             items = shipfile.build_items("0909610000", "IT", [], ["coa"])               # shipment file
             assert any("PAs" in t for _, t, _, _ in items) and items[-1][0] == "buyer", items
             assert "ملف شحنة" in svc.ship_start().text
+            from customs_bot import watch as watch_mod                              # watched lines
+            a = watch_mod.snapshot({"Taxes": ["ضريبة الوارد :  2%"]}, {})
+            b = watch_mod.snapshot({"Taxes": ["ضريبة الوارد :  5%"]}, {})
+            assert watch_mod.fingerprint(a) != watch_mod.fingerprint(b) and watch_mod.diff_lines(a, b)
+            assert router.parse("راقب 0713330090").kind == "watch"
         finally:
             await svc.live.close()
 

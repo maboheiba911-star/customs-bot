@@ -26,6 +26,8 @@ CREATE TABLE IF NOT EXISTS shipments(id INTEGER PRIMARY KEY AUTOINCREMENT, user_
 CREATE TABLE IF NOT EXISTS shipment_items(id INTEGER PRIMARY KEY AUTOINCREMENT, shipment_id INTEGER, section TEXT,
     pos INTEGER, text TEXT, source TEXT, url TEXT, done INTEGER DEFAULT 0, done_at TEXT);
 CREATE INDEX IF NOT EXISTS idx_items_ship ON shipment_items(shipment_id);
+CREATE TABLE IF NOT EXISTS watches(user_id INTEGER, chat_id INTEGER, code TEXT, snap TEXT, fp TEXT,
+    added_at TEXT, checked_at TEXT, changed_at TEXT, PRIMARY KEY(user_id, code));
 """
 
 
@@ -227,4 +229,29 @@ class AppDB:
 
     def close_shipment(self, sid: int, user_id: int) -> None:
         self._exec("UPDATE shipments SET closed=1 WHERE id=? AND user_id=?", (sid, user_id))
+
+    # ------------------------------------------------------------- watched tariff lines
+    def add_watch(self, user_id: int, chat_id: int, code: str, snap: dict | None, fp: str | None) -> bool:
+        """True if new (False if already watched)."""
+        cur = self._exec("""INSERT OR IGNORE INTO watches(user_id, chat_id, code, snap, fp, added_at, checked_at)
+                            VALUES(?,?,?,?,?,?,?)""",
+                         (user_id, chat_id, code, json.dumps(snap, ensure_ascii=False) if snap else None, fp,
+                          iso_now(), iso_now() if snap else None))
+        return cur.rowcount > 0
+
+    def del_watch(self, user_id: int, code: str) -> bool:
+        return self._exec("DELETE FROM watches WHERE user_id=? AND code=?", (user_id, code)).rowcount > 0
+
+    def watches_for(self, user_id: int) -> list[dict]:
+        return [dict(r) for r in self._all("SELECT * FROM watches WHERE user_id=? ORDER BY added_at", (user_id,))]
+
+    def all_watches(self) -> list[dict]:
+        rows = self._all("SELECT * FROM watches ORDER BY code")
+        return [{**dict(r), "snap": json.loads(r["snap"]) if r["snap"] else None} for r in rows]
+
+    def update_watch(self, user_id: int, code: str, snap: dict, fp: str, changed: bool) -> None:
+        now = iso_now()
+        self._exec("""UPDATE watches SET snap=?, fp=?, checked_at=?, changed_at=CASE WHEN ? THEN ? ELSE changed_at END
+                      WHERE user_id=? AND code=?""",
+                   (json.dumps(snap, ensure_ascii=False), fp, now, 1 if changed else 0, now, user_id, code))
 

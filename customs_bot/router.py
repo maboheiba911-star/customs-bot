@@ -66,7 +66,7 @@ EXPORT_PREFIX = re.compile(r"^\s*(?:/?export|تصدير|صادر|متطلبات 
 @dataclass
 class Intent:
     kind: str                      # calc | code | search | gpc | gpc_code | export | empty
-                                   # origin | import_from | export_to | agreement | rebate | buyer | cn | ship | ships
+                                   # origin | import_from | export_to | agreement | rebate | buyer | cn | ship | ships | watch | unwatch
     code: str = ""
     value: float | None = None
     currency: str = "EGP"
@@ -272,8 +272,15 @@ SHIP_FIRST = {normalize(w) for w in ("ملف", "شحنة", "شحنه")}
 SHIP_SECOND = {normalize(w) for w in ("شحنة", "الشحنة", "شحنه", "الشحنه", "جديدة", "جديده")}
 
 
+WATCH_WORDS = {normalize(w) for w in ("راقب", "تابع", "مراقبة", "مراقبه", "/watch", "watch")}
+
+
 def _rebate_or_buyer(words: list[str]) -> Intent | None:
     n = [normalize(w) for w in words[:3]]
+    if n[0] in WATCH_WORDS or n[0] in ("/unwatch", "unwatch"):
+        code = next((re.sub(r"\D", "", w) for w in words[1:] if is_code_token(w)), "")
+        if code or len(words) == 1:
+            return Intent(kind="unwatch" if n[0] in ("/unwatch", "unwatch") else "watch", code=code)
     if n[0] in ("/ship", "ship") or (len(n) > 1 and n[0] in SHIP_FIRST and n[1] in SHIP_SECOND and len(words) == 2):
         return Intent(kind="ship")
     if n[0] in ("/ships", "ships", normalize("شحناتي")) and len(words) == 1:

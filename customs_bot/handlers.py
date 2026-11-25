@@ -51,8 +51,9 @@ BTN_SEARCH, BTN_CALC, BTN_GS1, BTN_FX, BTN_HELP = (
 BTN_ORIGIN = "🌍 الاتفاقيات والمنشأ"
 BTN_BUYER, BTN_REBATE = "🌍 جمارك المشتري", "💰 رد الأعباء"
 BTN_SHIP, BTN_SHIPS = "📋 ملف شحنة", "🗂️ شحناتي"
+BTN_WATCH = "🔔 مراقبة البنود"
 MENU = ReplyKeyboardMarkup([[BTN_SEARCH, BTN_CALC], [BTN_ORIGIN], [BTN_BUYER, BTN_REBATE], [BTN_SHIP, BTN_SHIPS],
-                            [BTN_GS1, BTN_FX], [BTN_HELP]], resize_keyboard=True)
+                            [BTN_GS1, BTN_FX], [BTN_WATCH, BTN_HELP]], resize_keyboard=True)
 SHIP_ACTIONS = {"sp", "sc", "sb", "sr", "st", "so", "sd", "sz", "sl"}
 MODE_PROMPTS = {
     BTN_SEARCH: ("hs", "🔎 ابعت اسم المنتج (عربي أو إنجليزي) أو رقم البند."),
@@ -242,6 +243,34 @@ async def cmd_buyer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await handle_text(update, context, "جمارك المشتري " + text)
 
 
+async def cmd_watch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await handle_text(update, context, "راقب " + " ".join(context.args or []))
+
+
+async def cmd_unwatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    uid = update.effective_user.id if update.effective_user else 0
+    s = svc(context)
+    code = " ".join(context.args or [])
+    await send(update, context, s.watch_remove(uid, code) if code.strip() else s.watch_list(uid))
+
+
+async def watch_loop(application: Application) -> None:
+    """Twice a day: fetch every watched line fresh and tell the watchers what changed."""
+    from . import watch as watch_mod
+    await asyncio.sleep(watch_mod.FIRST_CHECK)
+    while True:
+        try:
+            s: CustomsService = application.bot_data["svc"]
+            for chat_id, text in await s.watch_check():
+                try:
+                    await application.bot.send_message(chat_id, text, parse_mode=ParseMode.HTML)
+                except Exception:
+                    log.exception("watch alert to %s failed", chat_id)
+        except Exception:
+            log.exception("watch check failed")
+        await asyncio.sleep(watch_mod.EVERY)
+
+
 async def cmd_ship(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.pop("mode", None)
     await send(update, context, svc(context).ship_start())
@@ -325,6 +354,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text: 
         ud.pop("mode", None)
         await send(update, context, s.ship_list(user_id))
         return
+    if text == BTN_WATCH:
+        ud.pop("mode", None)
+        await send(update, context, s.watch_list(user_id))
+        return
 
     sst = ud.get("ship")
     if forced_mode is None and isinstance(sst, dict) and sst.get("await"):
@@ -392,6 +425,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text: 
         reply = s.ship_start()
     elif intent.kind == "ships":
         reply = s.ship_list(user_id)
+    elif intent.kind == "watch":
+        chat_id = update.effective_chat.id if update.effective_chat else user_id
+        reply = await s.watch_add(user_id, chat_id, intent.code) if intent.code else s.watch_list(user_id)
+    elif intent.kind == "unwatch":
+        reply = s.watch_remove(user_id, intent.code) if intent.code else s.watch_list(user_id)
     elif intent.kind == "gpc":
         reply = s.gpc_search(intent.query)
     elif intent.kind == "gpc_code":
@@ -485,6 +523,16 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await send(update, context, await s.calculate_code(
             arg, pending["value"], currency_note=pending.get("currency_note"), qty=pending.get("qty"),
             origin=pending.get("origin"), personal=pending.get("personal", False), country=pending.get("country")))
+    elif action in ("wa", "wu", "wl"):
+        uid = update.effective_user.id if update.effective_user else 0
+        chat_id = update.effective_chat.id if update.effective_chat else uid
+        if action == "wa":
+            reply = await s.watch_add(uid, chat_id, arg)
+        elif action == "wu":
+            reply = s.watch_remove(uid, arg)
+        else:
+            reply = s.watch_list(uid)
+        await send(update, context, reply)
     elif action in SHIP_ACTIONS:
         uid = update.effective_user.id if update.effective_user else 0
         st = ud.get("ship") if isinstance(ud.get("ship"), dict) else {}
@@ -1101,6 +1149,7 @@ async def _updater_on_start(application: Application) -> None:
             tasks.add(loop.create_task(_announce_result(application)))
         if auto_update_enabled():
             tasks.add(loop.create_task(self_update_loop(application)))
+        tasks.add(loop.create_task(watch_loop(application)))
     except Exception:
         log.exception("self-update start hook failed")
 
@@ -1595,6 +1644,8 @@ def register(app: Application) -> None:
     app.add_handler(CommandHandler("cn", cmd_cn))
     app.add_handler(CommandHandler("ship", cmd_ship))
     app.add_handler(CommandHandler("ships", cmd_ships))
+    app.add_handler(CommandHandler("watch", cmd_watch))
+    app.add_handler(CommandHandler("unwatch", cmd_unwatch))
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("setfx", cmd_setfx))
     app.add_handler(CommandHandler("devfee", cmd_devfee))

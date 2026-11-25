@@ -18,6 +18,7 @@ from . import formatters as fmt
 from . import origin as origin_mod
 from . import rebate as rb
 from . import shipfile
+from . import watch as watch_mod
 from . import wits
 from .appdb import AppDB
 from html import escape as html_escape
@@ -155,11 +156,12 @@ class CustomsService:
                 return fees[code[:n]] or None
         return None
 
-    async def _live(self, code: str, trf_type: int) -> tuple[dict, str] | None:
+    async def _live(self, code: str, trf_type: int, *, fresh: bool = False) -> tuple[dict, str] | None:
         if self.live is None or not self.s.live_lookup:
             return None
         try:
-            return await asyncio.wait_for(self.live.detail(code, trf_type), timeout=self.live.timeout + 2)
+            return await asyncio.wait_for(self.live.detail(code, trf_type, fresh=fresh),
+                                          timeout=self.live.timeout + 2)
         except asyncio.TimeoutError:
             return None
 
@@ -235,7 +237,7 @@ class CustomsService:
             [Btn("🧮 احسب الجمارك", callback_data=f"k|{code}"),
              Btn("🌍 المنشأ والاتفاقيات", callback_data=f"od|{code}")],
             [Btn("📤 متطلبات التصدير", callback_data=f"x|{code}"), Btn("📋 اشتراطات الاستيراد", callback_data=f"i|{code}")],
-            [Btn("🧱 GS1 مقترح", callback_data=f"g|{code}")],
+            [Btn("🧱 GS1 مقترح", callback_data=f"g|{code}"), Btn("🔔 راقب البند", callback_data=f"wa|{code}")],
         ])
         return Reply(text, kb, state={"last_code": code})
 
@@ -690,6 +692,88 @@ class CustomsService:
               f"<i>{html_escape(cn2026.SOURCE)}</i>"]
         rows = [[Btn("🌍 جمارك المشتري في أوروبا", callback_data=f"ob|{digits}|EU")]]
         return Reply("\n".join(L), InlineKeyboardMarkup(rows))
+
+    # ------------------------------------------------------------ watched tariff lines (🔔)
+    async def _watch_snapshot(self, code: str) -> dict | None:
+        """Both views of a line, fresh from the site — or None if the site can't be reached right now."""
+        imp = await self._live(code, IMPORT, fresh=True)
+        if not imp:
+            return None
+        exp = await self._live(code, EXPORT, fresh=True)
+        if not exp:
+            return None
+        return watch_mod.snapshot(imp[0], exp[0])
+
+    async def watch_add(self, user_id: int, chat_id: int, code: str) -> Reply:
+        digits = re.sub(r"\D", "", code or "")
+        if len(digits) != 10:
+            return Reply("ابعت البند 10 أرقام — مثال: <code>راقب 0713330090</code>")
+        item = self.ref.get(digits)
+        if item is None:
+            item, _ = await self.item(digits)
+        if item is None:
+            return Reply(f"❌ البند <code>{digits}</code> مش موجود في التعريفة.")
+        if len(self.app.watches_for(user_id)) >= watch_mod.MAX_WATCHES:
+            return Reply(f"وصلت للحد ({watch_mod.MAX_WATCHES} بند). شيل بند من «🔔 مراقبة البنود» الأول.")
+        snap = await self._watch_snapshot(digits)
+        new = self.app.add_watch(user_id, chat_id, digits, snap, watch_mod.fingerprint(snap) if snap else None)
+        head = (f"🔔 تمام — هراقب البند <code>{digits}</code>" if new
+                else f"🔔 البند <code>{digits}</code> متراقب بالفعل")
+        tail = ("بكلّم موقع الجمارك مرتين في اليوم، ولو الضرايب أو شروط الاستيراد أو التصدير اتغيرت هبعتلك على طول."
+                if snap else "موقع الجمارك مش بيرد دلوقتي — هاخد الصورة الأولى في أول فحص، وبعدها أبلغك بأي تغيير.")
+        rows = [[Btn("🗂️ البنود المتراقبة", callback_data="wl"), Btn("🔕 شيل المراقبة", callback_data=f"wu|{digits}")]]
+        return Reply(f"{head}\n<i>{html_escape(fmt.short(item.short_ar, 80))}</i>\n\n{tail}", InlineKeyboardMarkup(rows))
+
+    def watch_list(self, user_id: int, note: str = "") -> Reply:
+        ws = self.app.watches_for(user_id)
+        L = ([note, ""] if note else []) + ["🔔 <b>مراقبة البنود</b> — البوت بيراجعها على موقع الجمارك مرتين في اليوم "
+                                            "ويبلغك بأي تغيير في الضرايب أو شروط الاستيراد والتصدير."]
+        if not ws:
+            L += ["", "مفيش بنود متراقبة. ابعت <code>راقب 0713330090</code> أو دوس «🔔 راقب البند» في كارت أي بند."]
+            return Reply("\n".join(L))
+        L.append("")
+        rows = []
+        for w in ws:
+            it = self.ref.get(w["code"])
+            name = fmt.short(it.short_ar, 40) if it else ""
+            last = f" — آخر تغيير {w['changed_at'][:10]}" if w.get("changed_at") else ""
+            L.append(f"• <code>{w['code']}</code> {html_escape(name)}{last}")
+            rows.append([Btn(f"🔕 {w['code']}", callback_data=f"wu|{w['code']}")])
+        return Reply("\n".join(L), InlineKeyboardMarkup(rows))
+
+    def watch_remove(self, user_id: int, code: str) -> Reply:
+        digits = re.sub(r"\D", "", code or "")
+        gone = self.app.del_watch(user_id, digits)
+        return self.watch_list(user_id, note=(f"🔕 شيلت المراقبة من <code>{digits}</code>." if gone
+                                              else f"البند <code>{digits}</code> مكانش متراقب."))
+
+    async def watch_check(self) -> list[tuple[int, str]]:
+        """Check every watched line once. Returns (chat_id, message) for each person who should hear about a change."""
+        out: list[tuple[int, str]] = []
+        by_code: dict[str, list[dict]] = {}
+        for w in self.app.all_watches():
+            by_code.setdefault(w["code"], []).append(w)
+        for code, rows in by_code.items():
+            snap = await self._watch_snapshot(code)
+            if snap is None:
+                continue                      # site down or busy: no news is not a change
+            fp = watch_mod.fingerprint(snap)
+            item = self.ref.get(code)
+            name = item.short_ar if item else ""
+            for w in rows:
+                if w["fp"] is None or w["snap"] is None:
+                    self.app.update_watch(w["user_id"], code, snap, fp, changed=False)      # first good look
+                    continue
+                if w["fp"] == fp:
+                    self.app.update_watch(w["user_id"], code, snap, fp, changed=False)
+                    continue
+                lines = watch_mod.diff_lines(w["snap"], snap)
+                self.app.update_watch(w["user_id"], code, snap, fp, changed=True)
+                if lines:
+                    when = _local_day(datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+                    out.append((int(w["chat_id"]), watch_mod.alert_text(code, name, w["snap"], snap, when)))
+            await asyncio.sleep(1)            # gentle with the site
+        return out
 
     # ------------------------------------------------------------ shipment file (ملف الشحنة)
     SHIP_QUICK = ("IT", "DE", "ES", "NL", "FR", "GB", "KE", "NG", "MA", "SA", "AE", "SD")

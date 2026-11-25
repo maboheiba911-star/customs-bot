@@ -73,10 +73,10 @@ class LiveLookup:
     def available(self) -> bool:
         return self.enabled and time.monotonic() >= self._open_until
 
-    async def detail(self, code10: str, trf_type: int = IMPORT) -> tuple[dict, str] | None:
-        """Return (record, fetched_at) or None. Never raises."""
+    async def detail(self, code10: str, trf_type: int = IMPORT, *, fresh: bool = False) -> tuple[dict, str] | None:
+        """Return (record, fetched_at) or None. Never raises. fresh=True skips the cache (still refreshes it)."""
         key = f"{code10}:{trf_type}"
-        cached = self.appdb.cache_get(key, self.cache_hours)
+        cached = None if fresh else self.appdb.cache_get(key, self.cache_hours)
         if cached:
             return cached
         if not self.available:
