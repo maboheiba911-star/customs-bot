@@ -17,6 +17,7 @@ from . import agreements as agr
 from . import formatters as fmt
 from . import origin as origin_mod
 from . import rebate as rb
+from . import shipfile
 from . import wits
 from .appdb import AppDB
 from html import escape as html_escape
@@ -30,6 +31,7 @@ from .official import EXPORT, HEADERS, IMPORT, LiveLookup
 from .refdb import ReferenceDB, TariffItem
 from .arabic import normalize
 from .router import CURRENCIES, MULTIPLIERS, Intent, parse_amount
+from .router import parse as route_parse
 from .router import _clean as _clean_text
 from .settings import Settings
 
@@ -110,6 +112,7 @@ class Reply:
     text: str
     keyboard: InlineKeyboardMarkup | None = None
     state: dict = field(default_factory=dict)      # updates for context.user_data
+    document: tuple[str, bytes] | None = None      # (file name, bytes) sent after the text
 
 
 class CustomsService:
@@ -686,6 +689,190 @@ class CustomsService:
         L += ["", "اكتب البند الأوروبي المناسب في الفاتورة للمشتري الأوروبي، وهو بيكمّله لـ 10 أرقام (TARIC) عنده.",
               f"<i>{html_escape(cn2026.SOURCE)}</i>"]
         rows = [[Btn("🌍 جمارك المشتري في أوروبا", callback_data=f"ob|{digits}|EU")]]
+        return Reply("\n".join(L), InlineKeyboardMarkup(rows))
+
+    # ------------------------------------------------------------ shipment file (ملف الشحنة)
+    SHIP_QUICK = ("IT", "DE", "ES", "NL", "FR", "GB", "KE", "NG", "MA", "SA", "AE", "SD")
+
+    def ship_start(self) -> Reply:
+        return Reply("📋 <b>ملف شحنة جديد</b> — هجمعلك ورق الشحنة من 3 جهات: مصر، وبلد المشتري، والعميل، "
+                     "وتعلّم على كل ورقة لما تخلص.\n\nابعت رقم البند أو اسم المنتج.\n"
+                     "مثال: <code>0713330090</code> أو <code>فول أبيض</code>",
+                     state={"ship": {"await": "code"}, "origin": None, "rebate": None})
+
+    def _ship_pick_buttons(self, items) -> InlineKeyboardMarkup:
+        rows, row = [], []
+        for i, it in enumerate(items[:PAGE], 1):
+            row.append(Btn(f"{i}) {it.code}", callback_data=f"sp|{it.code}"))
+            if len(row) == 2:
+                rows.append(row)
+                row = []
+        if row:
+            rows.append(row)
+        return InlineKeyboardMarkup(rows)
+
+    def ship_set_code(self, st: dict, code: str) -> Reply:
+        line, ask = self._pick_line(code, "sp")
+        if ask is not None:
+            return Reply(ask.text, ask.keyboard, state={"ship": {**st, "await": None}})
+        buttons = [Btn(f"{agr.country_flag(c)} {agr.country_name(c)}", callback_data=f"sc|{c}")
+                   for c in self.SHIP_QUICK]
+        rows = [buttons[i: i + 3] for i in range(0, len(buttons), 3)]
+        return Reply(f"تمام ✅ البند <code>{line}</code>\nالشحنة رايحة لأنهي بلد؟ اختار أو اكتب الاسم.",
+                     InlineKeyboardMarkup(rows), state={"ship": {**st, "code": line, "await": "country"}})
+
+    def ship_set_country(self, st: dict, iso: str, user_id: int) -> Reply:
+        st = {**st, "iso": iso, "await": None}
+        buyers = self.app.buyers_for(user_id)
+        rows = [[Btn(f"🤝 {b['name']}", callback_data=f"sb|{b['id']}")] for b in buyers[:8]]
+        rows.append([Btn("➕ عميل جديد", callback_data="sb|new"), Btn("⏭️ من غير عميل", callback_data="sb|0")])
+        return Reply(f"{agr.country_flag(iso)} {html_escape(agr.country_name(iso))} ✅\n\n"
+                     "مين العميل؟ اختار عميل محفوظ (متطلباته هتتضاف لوحدها)، أو ضيف عميل جديد.",
+                     InlineKeyboardMarkup(rows), state={"ship": st})
+
+    def ship_buyer_picker(self, st: dict) -> Reply:
+        chosen = set(st.get("reqs") or [])
+        rows = [[Btn(("✅ " if k in chosen else "⬜ ") + label, callback_data=f"sr|{k}")]
+                for k, label in shipfile.BUYER_TEMPLATES]
+        rows.append([Btn("✍️ متطلب تاني بكلامي", callback_data="sr|text"), Btn("💾 حفظ العميل", callback_data="sr|save")])
+        extra = [r for r in st.get("reqs") or [] if r not in shipfile.TEMPLATE_TEXT]
+        text = (f"🤝 <b>متطلبات العميل {html_escape(st.get('buyer_name', ''))}</b>\n"
+                "علّم على اللي العميل بيطلبه (هتتحفظ للشحنات الجاية):")
+        if extra:
+            text += "\n\nمتطلبات كتبتها:\n" + "\n".join(f"• {html_escape(x)}" for x in extra)
+        return Reply(text, InlineKeyboardMarkup(rows), state={"ship": {**st, "await": "buyer_req"}})
+
+    async def ship_answer(self, st: dict, text: str, user_id: int) -> Reply | None:
+        """An answer to a shipment-file question. None = not an answer: handle the text normally."""
+        want = st.get("await")
+        if want == "code":
+            intent = route_parse(text)
+            if intent.kind in ("code", "calc") and intent.code:
+                return self.ship_set_code(st, intent.code)
+            if intent.kind == "search" and intent.query:
+                items, total = self.ref.search(intent.query, PAGE, 0)
+                if not items:
+                    return Reply(fmt.search_results(intent.query, [], 0, 0, None), state={"ship": st})
+                body = fmt.search_results(intent.query, items[:PAGE], total, 0, None).replace(
+                    "اضغط رقم البند للتفاصيل، أو ابعت: <code>البند القيمة</code> للحساب.",
+                    "اختار البند علشان أكمّل ملف الشحنة.")
+                return Reply(body, self._ship_pick_buttons(items), state={"ship": {**st, "await": None}})
+            return None
+        if want == "country":
+            iso = agr.resolve_country(text)
+            if iso and (iso in agr.COUNTRIES or iso == "EU"):
+                return self.ship_set_country(st, iso, user_id)
+            if iso:
+                return Reply("اكتب البلد نفسها (مثلاً إيطاليا).", state={"ship": st})
+            if re.sub(r"[\s/.\-]", "", text).isdigit() or len(text.split()) > 4:
+                return None
+            return Reply(f"مش لاقي بلد اسمها «{html_escape(text[:40])}» — اكتبها تاني أو اختار من الزراير.",
+                         state={"ship": st})
+        if want == "buyer_name":
+            name = " ".join(text.split())[:60]
+            if not name:
+                return Reply("اكتب اسم العميل.", state={"ship": st})
+            return self.ship_buyer_picker({**st, "buyer_name": name, "reqs": []})
+        if want == "buyer_text":
+            req = " ".join(text.split())[:160]
+            if req:
+                st = {**st, "reqs": list(st.get("reqs") or []) + [req]}
+            return self.ship_buyer_picker(st)
+        if want == "buyer_req":
+            return None
+        return None
+
+    async def ship_callback(self, st: dict, action: str, parts: list[str], user_id: int) -> Reply | None:
+        arg = parts[0] if parts else ""
+        if action == "sp" and arg:
+            return self.ship_set_code(st, arg)
+        if action == "sc" and (arg in agr.COUNTRIES or arg == "EU"):
+            if not st.get("code"):
+                return self.ship_start()
+            return self.ship_set_country(st, arg, user_id)
+        if action == "sb":
+            if not st.get("code") or not st.get("iso"):
+                return self.ship_start()
+            if arg == "new":
+                return Reply("اكتب اسم العميل (أو اسم الشركة).", state={"ship": {**st, "await": "buyer_name"}})
+            buyer = self.app.get_buyer(int(arg), user_id) if arg.isdigit() and arg != "0" else None
+            return await self.ship_create(st, user_id, buyer)
+        if action == "sr":
+            if not st.get("code") or not st.get("buyer_name"):
+                return self.ship_start()
+            if arg == "text":
+                return Reply("اكتب المتطلب زي ما العميل طالبه (مثال: <code>رطوبة أقل من 12%</code>).",
+                             state={"ship": {**st, "await": "buyer_text"}})
+            if arg == "save":
+                reqs = list(st.get("reqs") or [])
+                bid = self.app.add_buyer(user_id, st["buyer_name"], st.get("iso"), reqs)
+                return await self.ship_create(st, user_id, self.app.get_buyer(bid, user_id))
+            reqs = list(st.get("reqs") or [])
+            reqs = [r for r in reqs if r != arg] if arg in reqs else reqs + [arg]
+            return self.ship_buyer_picker({**st, "reqs": reqs})
+        if action == "st" and len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+            found = self.app.get_shipment(int(parts[0]), user_id)
+            if found is None:
+                return Reply("الشحنة دي مش موجودة.")
+            self.app.toggle_item(int(parts[0]), int(parts[1]))
+            return self.ship_card(int(parts[0]), user_id)
+        if action == "so" and arg.isdigit():
+            return self.ship_card(int(arg), user_id)
+        if action == "sd" and arg.isdigit():
+            found = self.app.get_shipment(int(arg), user_id)
+            if found is None:
+                return Reply("الشحنة دي مش موجودة.")
+            sh, items = found
+            return Reply("📄 ملف الشحنة — افتحه في المتصفح، وتقدر تطبعه أو تحفظه PDF وتبعته.",
+                         document=(f"shipment-{sh['id']}.html", shipfile.html_doc(sh, items)))
+        if action == "sz" and arg.isdigit():
+            self.app.close_shipment(int(arg), user_id)
+            return self.ship_list(user_id, note=f"🔒 الشحنة #{arg} اتقفلت.")
+        if action == "sl":
+            return self.ship_list(user_id)
+        return None
+
+    async def ship_create(self, st: dict, user_id: int, buyer: dict | None) -> Reply:
+        line, iso = st["code"], st["iso"]
+        item, instr, _ = await self.export_requirements(line)
+        if item is None:
+            item, _ = await self.item(line)
+        reqs = [ins for ins in instr or [] if origin_mod.translate_export(ins.get("code", ""), ins.get("text", "")) is None]
+        items = shipfile.build_items(line, iso, reqs, (buyer or {}).get("reqs") or [])
+        title = fmt.short(item.short_ar if item else line, 40)
+        sid = self.app.add_shipment(user_id, line, iso, buyer["id"] if buyer else None, title, items)
+        r = self.ship_card(sid, user_id)
+        r.state = {"ship": None}
+        return r
+
+    def ship_card(self, sid: int, user_id: int) -> Reply:
+        found = self.app.get_shipment(sid, user_id)
+        if found is None:
+            return Reply("الشحنة دي مش موجودة.")
+        sh, items = found
+        rows, row = [], []
+        for i, it in enumerate(items, 1):
+            row.append(Btn(f"{'✅' if it['done'] else '⬜'}{i}", callback_data=f"st|{sid}|{it['pos']}"))
+            if len(row) == 5:
+                rows.append(row)
+                row = []
+        if row:
+            rows.append(row)
+        rows.append([Btn("📄 ملف للمشاركة", callback_data=f"sd|{sid}"), Btn("🗂️ شحناتي", callback_data="sl")])
+        rows.append([Btn("🔒 قفل الشحنة", callback_data=f"sz|{sid}")])
+        return Reply(shipfile.card(sh, items), InlineKeyboardMarkup(rows))
+
+    def ship_list(self, user_id: int, note: str = "") -> Reply:
+        ships = self.app.shipments_for(user_id)
+        if not ships:
+            return Reply((note + "\n\n" if note else "") + "مفيش شحنات مفتوحة. اعمل واحدة من «📋 ملف شحنة».")
+        L = ([note, ""] if note else []) + ["🗂️ <b>شحناتك المفتوحة</b>"]
+        rows = []
+        for sh in ships[:15]:
+            who = f" — {sh['buyer_name']}" if sh.get("buyer_name") else ""
+            L.append(f"#{sh['id']} {html_escape(sh['title'])} → {agr.country_flag(sh['iso'])} "
+                     f"{html_escape(agr.country_name(sh['iso']))}{html_escape(who)}: <b>{sh['done']}/{sh['total']}</b>")
+            rows.append([Btn(f"📋 #{sh['id']} ({sh['done']}/{sh['total']})", callback_data=f"so|{sh['id']}")])
         return Reply("\n".join(L), InlineKeyboardMarkup(rows))
 
     # ------------------------------------------------------------ export rebate (رد الأعباء)

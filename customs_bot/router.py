@@ -66,7 +66,7 @@ EXPORT_PREFIX = re.compile(r"^\s*(?:/?export|تصدير|صادر|متطلبات 
 @dataclass
 class Intent:
     kind: str                      # calc | code | search | gpc | gpc_code | export | empty
-                                   # origin | import_from | export_to | agreement | rebate | buyer | cn
+                                   # origin | import_from | export_to | agreement | rebate | buyer | cn | ship | ships
     code: str = ""
     value: float | None = None
     currency: str = "EGP"
@@ -268,8 +268,16 @@ def _trailing_country(tokens: list[str]) -> tuple[list[str], str | None]:
 EU_WORDS = {normalize(w) for w in ("أوروبا", "اوروبا", "الأوروبي", "الاوروبي", "أوروبي", "اوروبي", "الأوروبية")}
 
 
+SHIP_FIRST = {normalize(w) for w in ("ملف", "شحنة", "شحنه")}
+SHIP_SECOND = {normalize(w) for w in ("شحنة", "الشحنة", "شحنه", "الشحنه", "جديدة", "جديده")}
+
+
 def _rebate_or_buyer(words: list[str]) -> Intent | None:
     n = [normalize(w) for w in words[:3]]
+    if n[0] in ("/ship", "ship") or (len(n) > 1 and n[0] in SHIP_FIRST and n[1] in SHIP_SECOND and len(words) == 2):
+        return Intent(kind="ship")
+    if n[0] in ("/ships", "ships", normalize("شحناتي")) and len(words) == 1:
+        return Intent(kind="ships")
     if n[0] in ("/cn", "cn") or (n[0] in ("بند", "البند", "كود") and len(n) > 1 and n[1] in EU_WORDS):
         rest = words[1:] if n[0] in ("/cn", "cn") else words[2:]
         code = next((re.sub(r"\D", "", w) for w in rest if is_code_token(w)), "")

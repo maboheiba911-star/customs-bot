@@ -50,8 +50,10 @@ BTN_SEARCH, BTN_CALC, BTN_GS1, BTN_FX, BTN_HELP = (
 )
 BTN_ORIGIN = "🌍 الاتفاقيات والمنشأ"
 BTN_BUYER, BTN_REBATE = "🌍 جمارك المشتري", "💰 رد الأعباء"
-MENU = ReplyKeyboardMarkup([[BTN_SEARCH, BTN_CALC], [BTN_ORIGIN], [BTN_BUYER, BTN_REBATE], [BTN_GS1, BTN_FX],
-                            [BTN_HELP]], resize_keyboard=True)
+BTN_SHIP, BTN_SHIPS = "📋 ملف شحنة", "🗂️ شحناتي"
+MENU = ReplyKeyboardMarkup([[BTN_SEARCH, BTN_CALC], [BTN_ORIGIN], [BTN_BUYER, BTN_REBATE], [BTN_SHIP, BTN_SHIPS],
+                            [BTN_GS1, BTN_FX], [BTN_HELP]], resize_keyboard=True)
+SHIP_ACTIONS = {"sp", "sc", "sb", "sr", "st", "so", "sd", "sz", "sl"}
 MODE_PROMPTS = {
     BTN_SEARCH: ("hs", "🔎 ابعت اسم المنتج (عربي أو إنجليزي) أو رقم البند."),
     BTN_CALC: ("calc", "🧮 ابعت رقم البند + القيمة CIF بالجنيه.\nمثال: <code>0713330090 250000</code>\n"
@@ -131,11 +133,19 @@ def split_message(text: str, limit: int = 3900) -> list[str]:
 async def send(update: Update, context: ContextTypes.DEFAULT_TYPE, reply: Reply, *, edit: bool = False) -> None:
     for k, v in reply.state.items():
         context.user_data[k] = v
-    # one question at a time: a new question cancels the other flow's pending one
-    if isinstance(reply.state.get("origin"), dict) and reply.state["origin"].get("await"):
-        context.user_data["rebate"] = None
-    if isinstance(reply.state.get("rebate"), dict) and reply.state["rebate"].get("await"):
-        context.user_data["origin"] = None
+    # one question at a time: a new question cancels the other flows' pending ones
+    for flow in ("origin", "rebate", "ship"):
+        st = reply.state.get(flow)
+        if isinstance(st, dict) and st.get("await"):
+            for other in ("origin", "rebate", "ship"):
+                if other != flow and isinstance(context.user_data.get(other), dict):
+                    context.user_data[other] = {**context.user_data[other], "await": None}
+    if reply.document is not None:
+        if reply.text:
+            await update.effective_message.reply_text(reply.text, parse_mode=ParseMode.HTML)
+        name, data = reply.document
+        await context.bot.send_document(update.effective_chat.id, document=data, filename=name)
+        return
     if not reply.text:
         return
     chunks = split_message(reply.text)
@@ -232,6 +242,16 @@ async def cmd_buyer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await handle_text(update, context, "جمارك المشتري " + text)
 
 
+async def cmd_ship(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data.pop("mode", None)
+    await send(update, context, svc(context).ship_start())
+
+
+async def cmd_ships(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    uid = update.effective_user.id if update.effective_user else 0
+    await send(update, context, svc(context).ship_list(uid))
+
+
 async def cmd_cn(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await send(update, context, svc(context).cn_reply(" ".join(context.args or [])))
 
@@ -273,6 +293,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text: 
         ud["mode"] = mode
         ud["origin"] = None
         ud["rebate"] = None
+        ud["ship"] = None
         if mode != "calc":
             ud.pop("pending_code", None)
         await send(update, context, Reply(prompt))
@@ -296,6 +317,23 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text: 
         ud.pop("mode", None)
         await send(update, context, s.rebate_start())
         return
+    if text == BTN_SHIP:
+        ud.pop("mode", None)
+        await send(update, context, s.ship_start())
+        return
+    if text == BTN_SHIPS:
+        ud.pop("mode", None)
+        await send(update, context, s.ship_list(user_id))
+        return
+
+    sst = ud.get("ship")
+    if forced_mode is None and isinstance(sst, dict) and sst.get("await"):
+        reply = await s.ship_answer(sst, text, user_id)
+        if reply is not None:
+            _track(update, context, "ship", text)
+            await send(update, context, reply)
+            return
+        ud["ship"] = {**sst, "await": None}
 
     rst = ud.get("rebate")
     if forced_mode is None and isinstance(rst, dict) and rst.get("await"):
@@ -349,6 +387,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text: 
         reply = s.rebate_start(intent.country)
     elif intent.kind == "cn":
         reply = s.cn_reply(intent.code)
+    elif intent.kind == "ship":
+        ud.pop("mode", None)
+        reply = s.ship_start()
+    elif intent.kind == "ships":
+        reply = s.ship_list(user_id)
     elif intent.kind == "gpc":
         reply = s.gpc_search(intent.query)
     elif intent.kind == "gpc_code":
@@ -442,6 +485,12 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await send(update, context, await s.calculate_code(
             arg, pending["value"], currency_note=pending.get("currency_note"), qty=pending.get("qty"),
             origin=pending.get("origin"), personal=pending.get("personal", False), country=pending.get("country")))
+    elif action in SHIP_ACTIONS:
+        uid = update.effective_user.id if update.effective_user else 0
+        st = ud.get("ship") if isinstance(ud.get("ship"), dict) else {}
+        reply = await s.ship_callback(st, action, arg.split("|") if arg else [], uid)
+        if reply is not None:
+            await send(update, context, reply, edit=action == "st")
     elif action == "rb":
         uid = update.effective_user.id if update.effective_user else 0
         st = ud.get("rebate") if isinstance(ud.get("rebate"), dict) else {}
@@ -1544,6 +1593,8 @@ def register(app: Application) -> None:
     app.add_handler(CommandHandler("buyer", cmd_buyer))
     app.add_handler(CommandHandler("rebate", cmd_rebate))
     app.add_handler(CommandHandler("cn", cmd_cn))
+    app.add_handler(CommandHandler("ship", cmd_ship))
+    app.add_handler(CommandHandler("ships", cmd_ships))
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("setfx", cmd_setfx))
     app.add_handler(CommandHandler("devfee", cmd_devfee))

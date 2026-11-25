@@ -68,7 +68,8 @@ def build_application(settings=None, *, builder: ApplicationBuilder | None = Non
             ("start", "ابدأ"), ("help", "طريقة الاستخدام"), ("hs", "بحث عن بند"),
             ("calc", "حساب الجمارك"), ("origin", "المنشأ والاتفاقيات"), ("export", "متطلبات التصدير"),
             ("agreements", "اتفاقيات مصر التجارية"), ("buyer", "جمارك بلد المشتري"),
-            ("rebate", "رد الأعباء التصديرية"), ("gs1", "تصنيف GS1"),
+            ("rebate", "رد الأعباء التصديرية"), ("ship", "ملف شحنة جديد"), ("ships", "شحناتي"),
+            ("gs1", "تصنيف GS1"),
             ("fx", "أسعار الصرف"), ("about", "مصادر البيانات"), ("version", "نسخة البوت والتحديث"),
         ])
         # plain asyncio tasks (not application.create_task) so stopping the bot never waits on them
@@ -140,8 +141,11 @@ def selftest() -> int:
             assert round(res.total) == 100_000, res.total
             assert "رد الأعباء" in svc.rebate_start().text
             assert router.parse("جمارك المشتري 071333 إيطاليا").kind == "buyer"
-            from customs_bot import cn2026
+            from customs_bot import cn2026, shipfile
             assert ("07133390" in [c for c, _ in cn2026.lines("071333")]), "CN 2026 data"
+            items = shipfile.build_items("0909610000", "IT", [], ["coa"])               # shipment file
+            assert any("PAs" in t for _, t, _, _ in items) and items[-1][0] == "buyer", items
+            assert "ملف شحنة" in svc.ship_start().text
         finally:
             await svc.live.close()
 

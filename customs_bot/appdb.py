@@ -19,6 +19,13 @@ CREATE TABLE IF NOT EXISTS fx_auto(currency TEXT PRIMARY KEY, buy REAL, sell REA
 CREATE TABLE IF NOT EXISTS live_cache(code TEXT PRIMARY KEY, payload TEXT, fetched_at TEXT);
 CREATE TABLE IF NOT EXISTS dev_fee(prefix TEXT PRIMARY KEY, pct REAL, note TEXT, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS kv(key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS buyers(id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, name TEXT, iso TEXT,
+    reqs TEXT, created_at TEXT);
+CREATE TABLE IF NOT EXISTS shipments(id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, code TEXT, iso TEXT,
+    buyer_id INTEGER, title TEXT, created_at TEXT, closed INTEGER DEFAULT 0);
+CREATE TABLE IF NOT EXISTS shipment_items(id INTEGER PRIMARY KEY AUTOINCREMENT, shipment_id INTEGER, section TEXT,
+    pos INTEGER, text TEXT, source TEXT, url TEXT, done INTEGER DEFAULT 0, done_at TEXT);
+CREATE INDEX IF NOT EXISTS idx_items_ship ON shipment_items(shipment_id);
 """
 
 
@@ -28,6 +35,10 @@ def utcnow() -> datetime:
 
 def iso(dt: datetime | None = None) -> str:
     return (dt or utcnow()).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def iso_now() -> str:
+    return iso()
 
 
 def parse_iso(s: str | None) -> datetime | None:
@@ -165,3 +176,55 @@ class AppDB:
 
     def kv_set(self, key: str, value: str) -> None:
         self._exec("INSERT OR REPLACE INTO kv(key, value) VALUES(?,?)", (key, value))
+
+    # ------------------------------------------------------------- buyers & shipment files
+    def add_buyer(self, user_id: int, name: str, iso: str | None, reqs: list[str]) -> int:
+        cur = self._exec("INSERT INTO buyers(user_id, name, iso, reqs, created_at) VALUES(?,?,?,?,?)",
+                         (user_id, name, iso, json.dumps(reqs, ensure_ascii=False), iso_now()))
+        return int(cur.lastrowid)
+
+    def buyers_for(self, user_id: int) -> list[dict]:
+        rows = self._all("SELECT * FROM buyers WHERE user_id=? ORDER BY id DESC", (user_id,))
+        return [{**dict(r), "reqs": json.loads(r["reqs"] or "[]")} for r in rows]
+
+    def get_buyer(self, buyer_id: int, user_id: int) -> dict | None:
+        rows = self._all("SELECT * FROM buyers WHERE id=? AND user_id=?", (buyer_id, user_id))
+        return {**dict(rows[0]), "reqs": json.loads(rows[0]["reqs"] or "[]")} if rows else None
+
+    def add_shipment(self, user_id: int, code: str, iso: str, buyer_id: int | None, title: str,
+                     items: list[tuple[str, str, str, str]]) -> int:
+        with self._lock:
+            cur = self.conn.execute(
+                "INSERT INTO shipments(user_id, code, iso, buyer_id, title, created_at) VALUES(?,?,?,?,?,?)",
+                (user_id, code, iso, buyer_id, title, iso_now()))
+            sid = int(cur.lastrowid)
+            self.conn.executemany(
+                "INSERT INTO shipment_items(shipment_id, section, pos, text, source, url) VALUES(?,?,?,?,?,?)",
+                [(sid, sec, i, text, src, url) for i, (sec, text, src, url) in enumerate(items)])
+            self.conn.commit()
+        return sid
+
+    def get_shipment(self, sid: int, user_id: int) -> tuple[dict, list[dict]] | None:
+        rows = self._all("""SELECT s.*, b.name AS buyer_name FROM shipments s LEFT JOIN buyers b ON b.id=s.buyer_id
+                            WHERE s.id=? AND s.user_id=?""", (sid, user_id))
+        if not rows:
+            return None
+        items = self._all("SELECT * FROM shipment_items WHERE shipment_id=? ORDER BY pos", (sid,))
+        return dict(rows[0]), [dict(r) for r in items]
+
+    def shipments_for(self, user_id: int, *, open_only: bool = True) -> list[dict]:
+        rows = self._all(f"""SELECT s.*, b.name AS buyer_name,
+                                (SELECT COUNT(*) FROM shipment_items i WHERE i.shipment_id=s.id) AS total,
+                                (SELECT COUNT(*) FROM shipment_items i WHERE i.shipment_id=s.id AND i.done=1) AS done
+                             FROM shipments s LEFT JOIN buyers b ON b.id=s.buyer_id
+                             WHERE s.user_id=? {'AND s.closed=0' if open_only else ''} ORDER BY s.id DESC""",
+                         (user_id,))
+        return [dict(r) for r in rows]
+
+    def toggle_item(self, sid: int, pos: int) -> None:
+        self._exec("""UPDATE shipment_items SET done=1-done, done_at=? WHERE shipment_id=? AND pos=?""",
+                   (iso_now(), sid, pos))
+
+    def close_shipment(self, sid: int, user_id: int) -> None:
+        self._exec("UPDATE shipments SET closed=1 WHERE id=? AND user_id=?", (sid, user_id))
+
