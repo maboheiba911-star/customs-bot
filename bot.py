@@ -146,6 +146,9 @@ def selftest() -> int:
             assert ("07133390" in [c for c, _ in cn2026.lines("071333")]), "CN 2026 data"
             items = shipfile.build_items("0909610000", "IT", [], ["coa"])               # shipment file
             assert any("PAs" in t for _, t, _, _ in items) and items[-1][0] == "buyer", items
+            gulf = shipfile.build_items("0713330090", "SA", [], [])                   # Gulf + Africa rules
+            assert any("CoC" in t for _, t, _, _ in gulf), gulf
+            assert all(shipfile.destination_items("1007900000", c)[1] for c in ("AE", "ZA", "DZ", "LY"))
             assert "ملف شحنة" in svc.ship_start().text
             from customs_bot import watch as watch_mod                              # watched lines
             a = watch_mod.snapshot({"Taxes": ["ضريبة الوارد :  2%"]}, {})

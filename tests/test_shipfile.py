@@ -41,6 +41,73 @@ def test_africa_rules_and_unknown_country():
     assert not reviewed and "لسه مراجعتش" in items[0][0] and items[0][2] == shipfile.GTH
 
 
+GULF = ("SA", "AE", "KW", "QA", "OM", "BH")
+NEW_AFRICA = ("ZA", "DZ", "TN", "LY")
+
+
+def test_every_country_rule_has_a_source_and_a_link():
+    for iso, rules in shipfile.COUNTRY_RULES.items():
+        for r in rules:
+            assert r.source, (iso, r.text)
+            if iso not in ("KE", "NG", "MA"):                      # first batch: some rules cite reports only
+                assert r.url.startswith("https://"), (iso, r.text)
+    for iso in GULF + NEW_AFRICA:
+        items, reviewed = shipfile.destination_items("0713330090", iso)
+        assert reviewed and items and shipfile.reviewed_on(iso) == shipfile.SECOND_REVIEW
+    assert shipfile.reviewed_on("IT") == shipfile.reviewed_on("KE") == shipfile.FIRST_REVIEW
+    assert shipfile.reviewed_on("GH") == ""
+
+
+def test_gulf_rules():
+    sa = texts(shipfile.build_items("0713330090", "SA", [], []), "dest")
+    assert any("CoC" in t and "SFDA" in t for t in sa) and any("بالتات" in t for t in sa)
+    assert any("صحة نباتية" in t for t in sa) and any("Batch" in t for t in sa) and any("فسح" in t for t in sa)
+    sa_machine = texts(shipfile.build_items("8471300000", "SA", [], []), "dest")
+    assert not any("CoC" in t or "صحة نباتية" in t for t in sa_machine)   # SFDA CoC and phyto: plant products only
+    assert any("بالتات" in t for t in sa_machine)                       # pallets: every container
+    ae = texts(shipfile.build_items("0909610000", "AE", [], []), "dest")
+    assert any("eDAS" in t and "10,000" in t for t in ae) and any("ZAD" in t for t in ae)
+    assert any("GSO 841" in t for t in ae) and any("صحة نباتية" in t for t in ae)
+    kw = texts(shipfile.build_items("0713330090", "KW", [], []), "dest")
+    assert any("الغرفة التجارية" in t for t in kw) and any("بالعربي" in t for t in kw)
+    assert any("WATHEQ" in t for t in texts(shipfile.build_items("0713330090", "QA", [], []), "dest"))
+    assert any("بيان" in t for t in texts(shipfile.build_items("0713330090", "OM", [], []), "dest"))
+    for iso in GULF:
+        beans = texts(shipfile.build_items("0713330090", iso, [], []), "dest")
+        jam = texts(shipfile.build_items("2007999000", iso, [], []), "dest")
+        assert any("صحة نباتية" in t for t in beans) and not any("صحة نباتية" in t for t in jam), iso
+        if iso != "SA":
+            assert any("شهادة صحية" in t for t in jam) and not any("شهادة صحية" in t for t in beans), iso
+
+
+def test_south_and_north_africa_rules():
+    za_beans = texts(shipfile.build_items("0713330090", "ZA", [], []), "dest")
+    assert any("تصريح استيراد" in t for t in za_beans) and any("119" in t for t in za_beans)
+    assert any("R146" in t for t in za_beans)
+    za_anise = texts(shipfile.build_items("0909610000", "ZA", [], []), "dest")
+    assert any("تصريح استيراد" in t for t in za_anise) and not any("119" in t for t in za_anise)
+    dz_sorghum = texts(shipfile.build_items("1007900000", "DZ", [], []), "dest")
+    assert any("Non-GMO" in t for t in dz_sorghum) and any("تبخير" in t and "الإشعاع" in t for t in dz_sorghum)
+    assert any("120%" in t for t in dz_sorghum) and any("PPI" in t for t in dz_sorghum)
+    dz_anise = texts(shipfile.build_items("0909610000", "DZ", [], []), "dest")
+    assert not any("تبخير" in t for t in dz_anise)                     # grain certificates: grains only
+    tn = texts(shipfile.build_items("0713400000", "TN", [], []), "dest")
+    assert any("صحة نباتية" in t for t in tn) and any("البوليصة" in t for t in tn)
+    ly_sorghum = texts(shipfile.build_items("1007900000", "LY", [], []), "dest")
+    assert any("وزارة الاقتصاد" in t for t in ly_sorghum) and any("معدّلة وراثياً" in t for t in ly_sorghum)
+    assert any("CoI" in t for t in ly_sorghum)
+    ly_beans = texts(shipfile.build_items("0713330090", "LY", [], []), "dest")
+    assert not any("معدّلة وراثياً" in t for t in ly_beans)
+
+
+def test_share_page_says_when_rules_were_reviewed():
+    sh = {"id": 1, "title": "فاصوليا", "code": "0713330090", "iso": "SA", "buyer_name": ""}
+    items = [{"section": "dest", "text": "x", "source": "s", "url": "https://example.org", "done": 0}]
+    assert shipfile.SECOND_REVIEW in shipfile.html_doc(sh, items).decode()
+    assert shipfile.FIRST_REVIEW in shipfile.html_doc({**sh, "iso": "DE"}, items).decode()
+    assert "لسه متراجعتش" in shipfile.html_doc({**sh, "iso": "GH"}, items).decode()
+
+
 def test_egypt_side_takes_customs_export_instructions():
     instr = [{"code": "غ1001", "text": "يخضع للفحص من الهيئة العامة للرقابة على الصادرات والواردات"},
              {"code": "غ1001", "text": "يخضع للفحص من الهيئة العامة للرقابة على الصادرات والواردات"}]

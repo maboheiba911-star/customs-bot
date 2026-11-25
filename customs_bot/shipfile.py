@@ -12,6 +12,25 @@ the official portals instead of guessing. Sources reviewed on 24 Nov 2026:
          products; NAFDAC registration for processed food (raw materials for production usually not).
   Morocco  phytosanitary certificate for plants and plant products (not for processed ones with no pest risk);
          grains/seeds for consumption need no import permit (MICoR); ONSSA inspects before customs clearance.
+
+Sources reviewed on 25 Nov 2026:
+  Gulf   GCC plant quarantine law art. 15 (phytosanitary certificate with every plant consignment, via IPPC/Bahrain);
+         GCC guide for imported food control (original health certificate); GCC common labels (trade.gov/Bahrain).
+  Saudi  SFDA food clearance conditions (Apr 2025): phyto for grains/crops/produce, invoice with expiry + batch,
+         Arabic label, Ghad registration; SFDA CoC mandatory for Egyptian produce/crops/spices (Intertek 2021,
+         Bureau Veritas datasheet 2024: witnessed loading, sealing, lab tests); Mawani pallets rule (June 2025,
+         phased over a year; bulk and jumbo bags exempt); Fasah declaration 48 h before arrival (trade.gov 2026).
+  UAE    USDA FAIRS Nov 2025 (ZAD/FIRS registration, UAE.S GSO 9 sticker, MRL 1/2024, GSO 841); MoFA eDAS invoice
+         attestation for imports of AED 10,000+ (Cabinet Resolution 38/2022).
+  Kuwait / Qatar / Oman  trade.gov (chamber-legalized invoice, origin marking, import licence, Bayan); CFIA (WATHEQ).
+  South Africa  gov.za plant import permit (Agricultural Pests Act); USDA FAIRS Jun 2026 (APS Act 119/1990 for
+         dry beans, pulses, sorghum and other grains; R146 English labels).
+  Algeria  USDA FAIRS certificates Feb 2026 (phyto + non-GE for plant products; grains: quality, fumigation with
+         phosphine only, non-radioactivity; 120% deposit 30 days before shipment); trade.gov (PPI, Arabic labels).
+  Tunisia  MICoR (pulses: phyto, no permit); trade.gov (licences/quotas for some farm goods; payment after
+         shipping documents).
+  Libya  USDA FAIRS 2022 (Ministry of Economy registration, health certificate, Arabic label, halal, non-GE letter
+         for grains); Export Portal (permit + phyto, legalization); TÜV (CoI under CBL resolution 96/2015 for L/C).
 """
 from __future__ import annotations
 
@@ -32,9 +51,44 @@ NG_WKO = "https://www.wko.at/aussenwirtschaft/nigeria-export-import"
 NG_NAQS = "https://naqs.gov.ng/"
 NG_NAFDAC = "https://nafdac.gov.ng/food/"
 MA_MICOR = "https://micor.agriculture.gov.au/plants/morocco_ma/other"
-REVIEWED = "24 نوفمبر 2026"
+GCC_PQ = "https://www.ippc.int/en/countries/bahrain/eventreporting/2017/10/import-phytosanitary-requirements/"
+GCC_GUIDE = "https://members.wto.org/crnattachments/2017/sps/bhr/17_0268_00_e.pdf"
+GCC_LABELS = "https://www.trade.gov/country-commercial-guides/bahrain-labeling-and-marking-requirements"
+SA_SFDA = "https://sfda.gov.sa/sites/default/files/2025-04/ConditionsRequirementsFoodClearanceE.pdf"
+SA_COC = ("https://cdn1-verigates.bureauveritas.com/sites/verigates/files/2024-09/"
+          "SAUDI%20ARABIA-%20SFDA%20Food%20Program%20datasheet.pdf")
+SA_PALLETS = ("https://www.hapag-lloyd.com/en/services-information/news/2025/05/"
+              "saudi-arabia-imports--pallets-to-load-goods-mandatory.html")
+SA_TRADE = "https://www.trade.gov/country-commercial-guides/saudi-arabia-import-requirements-and-documentation"
+AE_FAIRS = "https://agriexchange.apeda.gov.in/ImportRegulations/1141920251222142541207.pdf"
+AE_MOFA = "https://www.mofa.gov.ae/Services/EDAS-Attestation-v2"
+KW_TRADE = "https://www.trade.gov/country-commercial-guides/kuwait-import-requirements-and-documentation"
+KW_LABELS = "https://www.trade.gov/country-commercial-guides/kuwait-labelingmarking-requirements"
+QA_WATHEQ = ("https://inspection.canada.ca/en/exporting-food-plants-animals/food-exports/requirements-library/"
+             "qatar-manufactured-foods")
+QA_TRADE = "https://www.trade.gov/country-commercial-guides/qatar-import-requirements-and-documentation"
+OM_TRADE = "https://www.trade.gov/country-commercial-guides/oman-trade-barriers"
+ZA_PERMIT = "https://www.gov.za/services/export-permits-import/phytosanitary-permit"
+ZA_FAIRS = "https://agriexchange.apeda.gov.in/ImportRegulations/043652026622114414377.pdf"
+DZ_FAIRS = "https://agriexchange.apeda.gov.in/ImportRegulations/040052026312161038314.pdf"
+DZ_PPI = "https://www.trade.gov/market-intelligence/algeria-mandatory-import-forecast-program"
+DZ_LABELS = "https://www.trade.gov/country-commercial-guides/algeria-labeling-and-marking-requirements"
+TN_MICOR = "https://micor.agriculture.gov.au/plants/tunisia_tn/lentils"
+TN_TRADE = "https://www.trade.gov/country-commercial-guides/tunisia-trade-barriers"
+TN_PAY = "https://www.trade.gov/country-commercial-guides/tunisia-import-requirements-and-documentation"
+LY_FAIRS = ("https://agriexchange.apeda.gov.in/ImportRegulations/"
+            "Libya%20FAIRS%20Annual%20Country%20ReportRabatLibyaLY20220001.pdf")
+LY_PORTAL = "https://www.exportportal.com/library_customs/country/libya-136"
+LY_DOCS = "https://www.exportportal.com/international_standards/detail/country/libya-136"
+LY_COI = ("https://www.tuv.com/content-media-files/united-arab-emirates/pdfs/s03/"
+          "tuv_r_product_sheet_din_a4_coi-scheme-for-libya.pdf")
+
+FIRST_REVIEW, SECOND_REVIEW = "24 نوفمبر 2026", "25 نوفمبر 2026"
+REVIEWED = SECOND_REVIEW                      # the latest review of any country
+REVIEWED_ON = {"EU": FIRST_REVIEW, "KE": FIRST_REVIEW, "NG": FIRST_REVIEW, "MA": FIRST_REVIEW}
 
 PLANT_CHAPTERS = {"06", "07", "08", "09", "10", "11", "12", "13", "14"}
+PROCESSED_FOOD = ("15", "16", "17", "18", "19", "20", "21", "22")
 
 
 @dataclass(frozen=True)
@@ -68,6 +122,13 @@ EU_RULES = (
          "اللائحة 2019/1793 (نسخة 30 يونيو 2026)", EU_1793, hs=("081010",)),
 )
 
+GCC_PHYTO = Rule("شهادة صحة نباتية سارية — لازم مع كل شحنة نباتات أو منتجات نباتية (قانون الحجر الزراعي الخليجي "
+                 "الموحد، مادة 15).", "قانون الحجر الزراعي لدول الخليج — IPPC", GCC_PQ, plants=True)
+GCC_HEALTH = Rule("للأغذية المصنّعة: شهادة صحية أصلية من الجهة الرسمية في مصر (هيئة سلامة الغذاء) مع كل شحنة.",
+                  "دليل الرقابة الخليجي على الأغذية المستوردة", GCC_GUIDE, hs=PROCESSED_FOOD)
+GCC_LABEL = Rule("الليبل بالعربي (أو عربي وإنجليزي) وعليه تاريخ الإنتاج والانتهاء — مواصفات خليجية موحدة.",
+                 "trade.gov — اشتراطات الليبل الخليجية (ديسمبر 2025)", GCC_LABELS)
+
 COUNTRY_RULES: dict[str, tuple[Rule, ...]] = {
     "KE": (
         Rule("شهادة مطابقة (CoC) من برنامج PVoC بتاع هيئة المواصفات الكينية KEBS — لأغلب المنتجات الغذائية، "
@@ -91,7 +152,131 @@ COUNTRY_RULES: dict[str, tuple[Rule, ...]] = {
              MA_MICOR, plants=True),
         Rule("الشحنة بتتفحص من ONSSA (مكتب السلامة الغذائية) قبل الإفراج الجمركي.", "تقارير USDA عن المغرب"),
     ),
+    "SA": (
+        Rule("⚠️ شهادة مطابقة (CoC) لكل شحنة من جهة معتمدة من هيئة الغذاء والدواء SFDA (زي SGS أو Bureau Veritas) — "
+             "إلزامية للخضار والفاكهة والمحاصيل والتوابل المصرية: فحص وعينة وتحليل في معمل معتمد (متبقيات، ولبعض "
+             "الأصناف فيروس الكبد A)، وحضور التحميل وختم الحاوية. اتفق معاهم قبل التحميل.",
+             "SFDA — برنامج شهادات المطابقة (Intertek 2021 / Bureau Veritas 2024)", SA_COC, plants=True),
+        Rule("شهادة صحة نباتية — مطلوبة للحبوب والمحاصيل الزراعية والخضار والفاكهة الطازجة.",
+             "SFDA — شروط فسح الأغذية (أبريل 2025)", SA_SFDA, plants=True),
+        Rule("الفاتورة لازم يبقى فيها الكمية وتاريخ الانتهاء ورقم التشغيلة (Batch) لكل صنف.",
+             "SFDA — شروط فسح الأغذية (أبريل 2025)", SA_SFDA),
+        Rule("الليبل بالعربي (SFDA.FD/GSO 9) وعليه تاريخ الانتهاء (SFDA.FD/GSO 150-1). أي «حلال» أو «أورجانيك» "
+             "على الليبل لازم شهادة تثبته.", "SFDA — شروط فسح الأغذية (أبريل 2025)", SA_SFDA),
+        Rule("📦 البضاعة جوه الحاوية لازم تبقى على بالتات (إلزامي بعد سنة تدرّج من يونيو 2025) — إلا البضاعة السايبة "
+             "والجامبو باج التقيلة. الحاوية المخالفة ممكن تترفض أو تتغرّم.",
+             "هيئة الموانئ السعودية «موانئ» — Hapag-Lloyd مايو 2025", SA_PALLETS),
+        Rule("المستورد لازم يكون مسجّل منشأته والأصناف على منصة Ghad بتاعة SFDA، ويقدّم البيان على «فسح» قبل وصول "
+             "الشحنة بـ 48 ساعة على الأقل — ابعتله الفاتورة والبوليصة وشهادة المنشأ بدري.",
+             "SFDA / trade.gov — السعودية (مايو 2026)", SA_TRADE),
+    ),
+    "AE": (
+        GCC_PHYTO,
+        Rule("تصريح الاستيراد (وزارة التغير المناخي والبيئة) مطلوب للبذور والشتلات — للأكل غالباً لأ، اتأكد مع المستورد.",
+             "تقرير USDA عن الإمارات (نوفمبر 2025)", AE_FAIRS, plants=True),
+        Rule("المستورد لازم يسجّل المنتج قبل الاستيراد على نظام ZAD (أو FIRS لو دبي)، وممكن يطلبوا تحليل في معمل البلدية.",
+             "تقرير USDA عن الإمارات (نوفمبر 2025)", AE_FAIRS),
+        Rule("الليبل بالعربي (UAE.S GSO 9) — ينفع استيكر عربي واحد متوافق عليه ويتلزق قبل التصدير. البقوليات والحبوب "
+             "الجافة والتوابل غالباً معفية من تاريخ الانتهاء بس لازم تاريخ إنتاج أو تعبئة.",
+             "تقرير USDA عن الإمارات (نوفمبر 2025)", AE_FAIRS),
+        Rule("متبقيات المبيدات حسب UAE.S MRL 1/2024 والأفلاتوكسين حسب GSO 841 — اعمل التحليل قبل الشحن.",
+             "تقرير USDA عن الإمارات (نوفمبر 2025)", AE_FAIRS, plants=True),
+        Rule("الفاتورة لو 10,000 درهم أو أكتر لازم تتوثّق إلكترونياً من الخارجية الإماراتية (eDAS، رسوم 150 درهم) — "
+             "المستورد بيعملها خلال 14 يوم، ومش مطلوبة للمناطق الحرة. خلي الفاتورة مطابقة لباقي الورق بالظبط.",
+             "قرار مجلس الوزراء 38 لسنة 2022 — الخارجية الإماراتية", AE_MOFA),
+        GCC_HEALTH,
+    ),
+    "KW": (
+        GCC_PHYTO,
+        Rule("الفاتورة لازم تتصدّق من الغرفة التجارية، وشهادة المنشأ أصل + نسختين.", "trade.gov — الكويت", KW_TRADE),
+        Rule("بلد المنشأ يتكتب على البضاعة بطريقة متتشالش ولا تتعدّل (Product of Egypt).", "trade.gov — الكويت",
+             KW_LABELS),
+        Rule("المستورد لازم يكون معاه رخصة استيراد من وزارة التجارة ومسجّل في غرفة تجارة الكويت.", "trade.gov — الكويت",
+             KW_TRADE),
+        GCC_LABEL,
+        GCC_HEALTH,
+    ),
+    "QA": (
+        GCC_PHYTO,
+        Rule("المنتج لازم يكون متسجّل على نظام WATHEQ بتاع وزارة الصحة القطرية، والنظام بيحدد مستوى الفحص في "
+             "المنفذ — اتفق مع المستورد على التسجيل.", "الوكالة الكندية لفحص الأغذية CFIA — شروط قطر", QA_WATHEQ),
+        Rule("المستورد لازم يكون معاه رخصة استيراد.", "trade.gov — قطر", QA_TRADE),
+        GCC_LABEL,
+        GCC_HEALTH,
+    ),
+    "OM": (
+        GCC_PHYTO,
+        Rule("المستورد لازم يكون مسجّل في وزارة التجارة والصناعة عن طريق منصة «بيان».", "trade.gov — عُمان", OM_TRADE),
+        GCC_LABEL,
+        GCC_HEALTH,
+    ),
+    "BH": (
+        GCC_PHYTO,
+        GCC_LABEL,
+        GCC_HEALTH,
+    ),
+    "ZA": (
+        Rule("تصريح استيراد نباتات (Import permit) من وزارة الزراعة في جنوب أفريقيا — لو المنتج مش معفي، المستورد "
+             "بيطلعه قبل الشحن ويبعتلك نسخة، وصالح سنة. الشحنة لازم تطابق شروطه.", "gov.za — تصريح استيراد النباتات",
+             ZA_PERMIT, plants=True),
+        Rule("شهادة صحة نباتية أصلية تسافر مع البضاعة، وفيها الإقرارات الإضافية اللي مكتوبة في التصريح.",
+             "gov.za — تصريح استيراد النباتات", ZA_PERMIT, plants=True),
+        Rule("البقوليات الجافة والحبوب (فاصوليا، فول، ذرة رفيعة...) لازم تطابق مواصفات التدريج والتعبئة والعلامات "
+             "المحلية (قانون 119 لسنة 1990) — بتتفحص في الميناء.", "تقرير USDA عن جنوب أفريقيا (يونيو 2026)", ZA_FAIRS,
+             hs=("0713", "10", "1202")),
+        Rule("الليبل بالإنجليزي (لائحة R146): المكونات، بيانات المستورد، «Product of Egypt»، رقم التشغيلة، التاريخ، "
+             "والوزن بالمتري.", "تقرير USDA عن جنوب أفريقيا (يونيو 2026)", ZA_FAIRS),
+    ),
+    "DZ": (
+        Rule("شهادة صحة نباتية — لكل المنتجات النباتية، ومعاها شهادة إن المنتج مش معدّل وراثياً (Non-GMO).",
+             "تقرير USDA عن شهادات الجزائر (فبراير 2026)", DZ_FAIRS, plants=True),
+        Rule("الحبوب كمان: شهادة جودة ومطابقة، وشهادة تبخير (فوسفيد الألومنيوم أو الماغنسيوم بس)، وشهادة خلو من الإشعاع.",
+             "تقرير USDA عن شهادات الجزائر (فبراير 2026)", DZ_FAIRS, hs=("10",)),
+        Rule("الأصول (المنشأ والصحة النباتية) لازم تسافر مع الشحنة — وفي فحص مطابقة في الميناء قبل الإفراج "
+             "(التجارة والزراعة).", "تقرير USDA عن شهادات الجزائر (فبراير 2026)", DZ_FAIRS),
+        Rule("⏱️ لو البضاعة للبيع: المستورد لازم يودع 120% من قيمة الصفقة في بنك جزائري قبل الشحن بـ 30 يوم — "
+             "متشحنش قبل ما يأكدلك.", "تقرير USDA عن شهادات الجزائر (فبراير 2026)", DZ_FAIRS),
+        Rule("المستورد لازم يكون قدّم «برنامج الاستيراد التقديري» (PPI) لوزارة التجارة الخارجية قبل أي استيراد.",
+             "trade.gov — الجزائر", DZ_PPI),
+        Rule("الليبل بالعربي — إلزامي وبيتطبّق بصرامة (الفرنساوي مش إلزامي بس مفيد).", "trade.gov — الجزائر (يناير 2023)",
+             DZ_LABELS),
+    ),
+    "TN": (
+        Rule("شهادة صحة نباتية — للمنتجات النباتية الخام. البقوليات زي العدس للاستهلاك مش محتاجة تصريح استيراد.",
+             "MICoR / تقرير USDA عن تونس", TN_MICOR, plants=True),
+        Rule("أغلب المنتجات استيرادها حر، بس في منتجات زراعية محتاجة رخصة من وزارة التجارة أو عليها حصص — اتأكد إن "
+             "منتجك مش منهم.", "trade.gov — تونس", TN_TRADE),
+        Rule("💵 المستورد مش بيقدر يحوّل الفلوس غير بعد ما يقدّم للبنك مستندات بتثبت الشحن — ابعتله البوليصة أول ما تطلع.",
+             "trade.gov — تونس", TN_PAY),
+    ),
+    "LY": (
+        Rule("تصريح استيراد + شهادة صحة نباتية — لكل النباتات والمنتجات النباتية.", "Export Portal — لوائح ليبيا",
+             LY_PORTAL, plants=True),
+        Rule("المنتج لازم يتسجّل في وزارة الاقتصاد الليبية قبل التخليص: قائمة مكونات + شهادة بيع حر + شهادة تحليل من "
+             "جهة رسمية في مصر.", "تقرير USDA عن ليبيا (2022)", LY_FAIRS),
+        Rule("شهادة صحية (Health Certificate) من جهة رسمية — مطلوبة في الجمارك الليبية مع باقي الورق.",
+             "تقرير USDA عن ليبيا (2022)", LY_FAIRS),
+        Rule("الفاتورة وشهادة المنشأ بتتصدّق من الغرفة التجارية، وكمان من السفارة الليبية — اتأكد مع المستورد.",
+             "Export Portal — لوائح ليبيا", LY_DOCS),
+        Rule("الليبل بالعربي وعليه تاريخ الانتهاء والوزن الصافي والمكونات وطريقة التخزين.", "تقرير USDA عن ليبيا (2022)",
+             LY_FAIRS),
+        Rule("شهادة حلال — مطلوبة لاستيراد المنتجات الغذائية (اتأكد مع المستورد لو خامات).", "تقرير USDA عن ليبيا (2022)",
+             LY_FAIRS),
+        Rule("شحنات الحبوب لازم معاها خطاب إنها مش معدّلة وراثياً.", "تقرير USDA عن ليبيا (2022)", LY_FAIRS,
+             hs=("10",)),
+        Rule("لو الدفع بالاعتماد المستندي (L/C): شهادة فحص قبل الشحن (CoI) حسب قرار المصرف المركزي الليبي 96 لسنة 2015.",
+             "TÜV Rheinland — برنامج ليبيا", LY_COI),
+    ),
 }
+
+
+def reviewed_on(iso: str) -> str:
+    """When the rules shown for this country were last checked against their sources ('' = not reviewed)."""
+    if iso == "EU" or iso in A.EU:
+        return REVIEWED_ON["EU"]
+    if iso not in COUNTRY_RULES:
+        return ""
+    return REVIEWED_ON.get(iso, SECOND_REVIEW)
 
 BUYER_TEMPLATES = (
     ("coa", "📄 شهادة تحليل (COA) من معمل معتمد"),
@@ -206,6 +391,9 @@ def html_doc(sh: dict, items: list[dict]) -> bytes:
                     f"<td class='src'>{src}</td></tr>")
     done = sum(1 for it in items if it["done"])
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    rv = reviewed_on(sh["iso"])
+    review = f"شروط البلد دي اتراجعت في {rv} من المصادر المكتوبة جنب كل بند،" if rv else \
+        "شروط البلد دي لسه متراجعتش بالتفصيل،"
     page = f"""<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>ملف شحنة #{sh['id']}</title>
 <style>body{{font-family:system-ui,Tahoma,Arial,sans-serif;margin:24px;color:#1b1b1b}}h1{{font-size:20px;margin:0}}
@@ -217,6 +405,6 @@ font-size:12px;width:28%}}.foot{{color:#777;font-size:12px;margin-top:16px}}</st
                                                                  if sh.get('buyer_name') else ''}
  · التقدم {done}/{len(items)} · {now}</div>
 <table>{''.join(rows)}</table>
-<div class="foot">ELHEIBALAND — من بوت الجمارك. شروط الدول اتراجعت في {REVIEWED} من المصادر المكتوبة جنب كل بند،
+<div class="foot">ELHEIBALAND — من بوت الجمارك. {review}
 واتأكد دايماً مع المستورد قبل الشحن.</div></body></html>"""
     return page.encode("utf-8")

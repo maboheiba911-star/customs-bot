@@ -776,7 +776,7 @@ class CustomsService:
         return out
 
     # ------------------------------------------------------------ shipment file (ملف الشحنة)
-    SHIP_QUICK = ("IT", "DE", "ES", "NL", "FR", "GB", "KE", "NG", "MA", "SA", "AE", "SD")
+    SHIP_QUICK = ("IT", "DE", "NL", "FR", "ES", "SA", "AE", "KW", "QA", "KE", "NG", "ZA", "MA", "DZ", "LY")
 
     def ship_start(self) -> Reply:
         return Reply("📋 <b>ملف شحنة جديد</b> — هجمعلك ورق الشحنة من 3 جهات: مصر، وبلد المشتري، والعميل، "
