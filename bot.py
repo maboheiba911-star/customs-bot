@@ -8,6 +8,7 @@ import logging.handlers
 import os
 import shutil
 import socket
+import subprocess
 import sys
 from datetime import timedelta
 from pathlib import Path
@@ -34,7 +35,7 @@ def setup_logging(data_dir: Path) -> None:
                                               encoding="utf-8")
     fh.setFormatter(fmt)
     root.addHandler(fh)
-    if sys.stderr is not None:          # pythonw (no console) has no stderr
+    if sys.stderr is not None and sys.stderr.isatty():   # pythonw has no stderr; boot.log only wants errors
         sh = logging.StreamHandler()
         sh.setFormatter(fmt)
         root.addHandler(sh)
@@ -50,6 +51,26 @@ def single_instance() -> socket.socket | None:
     except OSError:
         sock.close()
         return None
+
+
+def on_termux() -> bool:
+    return "com.termux" in (os.environ.get("PREFIX") or "")
+
+
+def ensure_guard() -> bool:
+    """On the phone: start tools/guard.py (restarts the bot if Android stops it) unless it already runs.
+    The guard exits by itself when one is already running. GUARD=0 in .env turns this off."""
+    script = ROOT / "tools" / "guard.py"
+    if not on_termux() or (os.getenv("GUARD") or "1").strip() == "0" or not script.exists():
+        return False
+    try:
+        subprocess.Popen([sys.executable, str(script)], cwd=str(ROOT), stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True,
+                         start_new_session=True)
+        return True
+    except OSError as e:
+        log.warning("guard not started: %s", e)
+        return False
 
 
 def build_application(settings=None, *, builder: ApplicationBuilder | None = None,
@@ -190,6 +211,8 @@ def main() -> None:
     if not s.reference_db.exists():
         sys.exit(f"❌ ملف البيانات مش موجود: {s.reference_db}")
     app = build_application(s)
+    if ensure_guard():
+        log.info("phone guard started (restarts the bot if Android stops it)")
     counts = app.bot_data["svc"].ref.counts()
     log.info("starting — tariff lines: %s, GPC bricks: %s, private: %s", counts["tariff"], counts["gpc_brick"],
              s.private_mode)

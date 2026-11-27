@@ -156,35 +156,56 @@ def stop_running_bot() -> None:
 
 
 def start_bot() -> None:
+    (ROOT / "data").mkdir(parents=True, exist_ok=True)
     (ROOT / "data" / "STOPPED").unlink(missing_ok=True)   # starting it here on purpose: undo /shutdown
-    kw = dict(cwd=str(ROOT), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-              close_fds=True)
-    if IS_WIN:
-        kw["creationflags"] = 0x00000008 | 0x00000200   # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
-    else:
-        kw["start_new_session"] = True                  # keeps running after the terminal closes (Termux)
-    subprocess.Popen([str(pythonw()), str(ROOT / "bot.py")], **kw)
+    with open(ROOT / "data" / "boot.log", "a", encoding="utf-8") as out:   # errors before logging starts
+        kw = dict(cwd=str(ROOT), stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT, close_fds=True)
+        if IS_WIN:
+            kw["creationflags"] = 0x00000008 | 0x00000200   # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+        else:
+            kw["start_new_session"] = True                  # keeps running after the terminal closes (Termux)
+        subprocess.Popen([str(pythonw()), str(ROOT / "bot.py")], **kw)
+
+
+ANY_TOKEN = re.compile(r"\d{6,12}:[A-Za-z0-9_-]{30,50}")
+
+
+def mask_tokens(text: str) -> str:
+    """Log lines shown on screen (and in screenshots) never carry the bot token."""
+    return ANY_TOKEN.sub("***", text) if text else text
+
+
+def _read_from(path: Path, offset: int) -> str:
+    if not path.exists():
+        return ""
+    with open(path, encoding="utf-8", errors="ignore") as f:
+        f.seek(min(offset, path.stat().st_size))
+        return f.read()
 
 
 def wait_for_start(seconds: int = 25, tick=None) -> tuple[bool, str]:
+    """Waits for the bot just started to report in. (False, last log lines — token masked) if it did not."""
+    boot = LOG.with_name("boot.log")                    # what the bot printed before its log was set up
     start_size = LOG.stat().st_size if LOG.exists() else 0
+    boot_size = boot.stat().st_size if boot.exists() else 0
     deadline = time.time() + seconds
     while time.time() < deadline:
         for _ in range(10):
             time.sleep(0.1)
             if tick:
                 tick()
-        if LOG.exists():
-            with open(LOG, encoding="utf-8", errors="ignore") as f:
-                f.seek(start_size)
-                new = f.read()
-            if "Application started" in new or "starting —" in new:
-                if "Conflict" in new or "InvalidToken" in new or "Unauthorized" in new:
-                    break
-                return True, ""
-            if "Error" in new or "Traceback" in new:
-                return False, new[-600:]
-    return False, (LOG.read_text(encoding="utf-8", errors="ignore")[-600:] if LOG.exists() else "")
+        new = _read_from(LOG, start_size)
+        if "Application started" in new or "starting —" in new:
+            if "Conflict" in new or "InvalidToken" in new or "Unauthorized" in new:
+                break
+            return True, ""
+        if "Error" in new or "Traceback" in new:
+            return False, mask_tokens(new[-600:])
+        early = _read_from(boot, boot_size).strip()      # it stopped before it could log anything
+        if any(k in early for k in ("❌", "⏸️", "Traceback", "Error")):
+            return False, mask_tokens(early[-600:])
+    tail = _read_from(LOG, start_size) or (LOG.read_text(encoding="utf-8", errors="ignore") if LOG.exists() else "")
+    return False, mask_tokens(tail[-600:])
 
 
 def finish(token: str, autostart: bool, tick=None) -> tuple[bool, list[str]]:

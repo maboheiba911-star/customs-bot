@@ -50,15 +50,24 @@ pick_mirror() {
   done
   return 1
 }
-update_lists || true
-if ! has_python; then
-  warn "سيرفر الحزم مش بيرد — هدوّر على سيرفر تاني"
-  pick_mirror && update_lists || true
+# تشغيل تاني (إصلاح): لو البوت متسطّب وكل الأدوات موجودة، منلمسش حزم Termux — أسرع وأأمن
+ready() {
+  [ -f "$DIR/bot.py" ] && command -v python >/dev/null 2>&1 && command -v curl >/dev/null 2>&1 \
+    && command -v termux-wake-lock >/dev/null 2>&1 && python -m pip --version >/dev/null 2>&1
+}
+if ready; then
+  echo "Termux جاهز من قبل — هعدّي الخطوة دي."
+else
+  update_lists || true
+  if ! has_python; then
+    warn "سيرفر الحزم مش بيرد — هدوّر على سيرفر تاني"
+    pick_mirror && update_lists || true
+  fi
+  has_python || fail "مقدرتش أوصل لأي سيرفر حزم من الشبكة دي. جرّب تبدّل (واي فاي ⇄ داتا) وشغّل الأمر تاني."
+  pkg upgrade -y -o Dpkg::Options::=--force-confnew >/dev/null 2>&1 || true
+  pkg install -y python curl termux-tools || fail "تسطيب بايثون فشل — صوّر الشاشة وابعتها لـ Claude."
+  python -m pip --version >/dev/null 2>&1 || pkg install -y python-pip
 fi
-has_python || fail "مقدرتش أوصل لأي سيرفر حزم من الشبكة دي. جرّب تبدّل (واي فاي ⇄ داتا) وشغّل الأمر تاني."
-pkg upgrade -y -o Dpkg::Options::=--force-confnew >/dev/null 2>&1 || true
-pkg install -y python curl termux-tools || fail "تسطيب بايثون فشل — صوّر الشاشة وابعتها لـ Claude."
-python -m pip --version >/dev/null 2>&1 || pkg install -y python-pip
 
 # ------------------------------------------------------------------ 2) storage permission (optional)
 say "2/6 إذن الملفات (لو ظهرت رسالة اضغط «سماح») — لو مظهرتش مش مشكلة"
@@ -149,10 +158,11 @@ python bot.py --selftest || fail "اختبار البوت فشل — ابعت ل
 
 # ------------------------------------------------------------------ start on boot (Termux:Boot)
 mkdir -p "$(dirname "$BOOT")"
+# بعد ما التليفون يعيد التشغيل: الحارس بيشغّل البوت، وبيرجّعه لو أندرويد قفله بعد كده
 cat > "$BOOT" <<EOF
 #!/data/data/com.termux/files/usr/bin/sh
 termux-wake-lock
-cd "$DIR" && exec python bot.py >> data/boot.log 2>&1
+cd "$DIR" && exec python tools/guard.py >> data/guard.log 2>&1
 EOF
 chmod +x "$BOOT"
 
@@ -161,14 +171,19 @@ termux-wake-lock || true          # يمنع أندرويد ينيّم البو�
 ask_token
 if grep -q '^TELEGRAM_BOT_TOKEN=.\+' .env; then
   say "6/6 تشغيل البوت"
-  pkill -f 'customs-bot/bot[.]py|python bot[.]py' 2>/dev/null || true; sleep 2   # إعادة تشغيل بالكود الجديد
+  pkill -f 'customs-bot/bot[.]py|python bot[.]py' 2>/dev/null || true             # إعادة تشغيل بالكود الجديد
+  pkill -f 'customs-bot/tools/guard[.]py|python tools/guard[.]py' 2>/dev/null || true
+  sleep 2
   python - <<'PY'
 import sys
 sys.path.insert(0, "tools")
+import guard
 import setup_wizard as w
 w.start_bot()
-ok, tail = w.wait_for_start()
-print("✅ البوت شغال" if ok else "⚠️ البوت مقامش:\n" + tail[-400:])
+ok, tail = w.wait_for_start(60)
+print("✅ البوت شغال" if ok else "⚠️ البوت مقامش — صوّر الشاشة وابعتها لـ Claude:\n" + w.mask_tokens(tail)[-500:])
+guard.spawn()
+print("🛡️ الحارس شغال: لو أندرويد قفل البوت، بيرجّعه لوحده خلال كام دقيقة.")
 PY
 else
   say "6/6 توكن البوت — من BotFather: /mybots ← البوت ← API Token ← انسخه والصقه هنا"
@@ -182,5 +197,6 @@ cat <<'TXT'
   1) الإعدادات ← التطبيقات ← Termux ← البطارية ← «غير مقيّد» (Unrestricted)
   2) افتح تطبيق Termux:Boot مرة واحدة (علشان يشتغل لوحده بعد ما التليفون يعيد التشغيل)
   3) سيب Termux مفتوح في الخلفية — متكتبش exit
+  4) في حارس بيتأكد كل 3 دقايق إن البوت شغال، ولو وقع بيرجّعه لوحده
 جرّب: ابعت /version للبوت في تليجرام.
 TXT

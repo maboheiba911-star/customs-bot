@@ -430,3 +430,116 @@ def test_fetch_backup_retries_a_broken_download(tmp_path, monkeypatch):
         api.close()
     assert broken and (tmp_path / "reference.db").stat().st_size > 1_000_000
     assert any("بجرب تاني" in s for s in said)
+
+
+# ------------------------------------------------------------------ the guard (keeps the bot up on the phone)
+def _guard(monkeypatch, tmp_path):
+    sys.path.insert(0, str(ROOT / "tools"))
+    import guard
+
+    (tmp_path / "data").mkdir(exist_ok=True)
+    (tmp_path / "bot.py").write_text("# bot")
+    monkeypatch.setattr(guard, "ROOT", tmp_path)
+    started = []
+    monkeypatch.setattr(guard.subprocess, "Popen", lambda cmd, **kw: started.append((cmd, kw)))
+    return guard, started
+
+
+def _free_port():
+    import socket
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+def test_guard_starts_the_bot_only_when_it_is_down(monkeypatch, tmp_path):
+    guard, started = _guard(monkeypatch, tmp_path)
+    monkeypatch.setattr(guard, "LOCK_PORT", _free_port())
+    monkeypatch.setattr(guard, "update_in_progress", lambda: False)
+    assert guard.check() == "started"
+    cmd, kw = started[-1]
+    assert cmd[-1].endswith("bot.py") and kw["start_new_session"] and kw["stderr"] == guard.subprocess.STDOUT
+    assert (tmp_path / "data" / "boot.log").exists()                   # early errors are kept
+    held = guard.hold(guard.LOCK_PORT)                                  # the bot holds its port again
+    try:
+        assert guard.check() == "ok" and len(started) == 1
+    finally:
+        held.close()
+
+
+def test_guard_leaves_shutdown_and_updates_alone(monkeypatch, tmp_path):
+    guard, started = _guard(monkeypatch, tmp_path)
+    monkeypatch.setattr(guard, "LOCK_PORT", _free_port())
+    monkeypatch.setattr(guard, "update_in_progress", lambda: True)
+    assert guard.check() == "updating"
+    (tmp_path / "data" / "STOPPED").write_text("x")
+    assert guard.check() == "stopped"
+    (tmp_path / "bot.py").unlink()
+    assert guard.check() == "gone" and not started
+
+
+def test_guard_sees_the_updater_in_proc(tmp_path):
+    sys.path.insert(0, str(ROOT / "tools"))
+    import guard
+
+    proc = tmp_path / "proc"
+    for pid, cmd in (("12", b"python\0bot.py\0"), ("34", b"python\0/x/data/updates/apply_update.py\0"),
+                     ("self", b"")):
+        (proc / pid).mkdir(parents=True)
+        (proc / pid / "cmdline").write_bytes(cmd)
+    assert guard.update_in_progress(proc)
+    (proc / "34" / "cmdline").write_bytes(b"python\0bot.py\0")
+    assert not guard.update_in_progress(proc)
+    assert not guard.update_in_progress(tmp_path / "no-proc")
+
+
+def test_one_guard_per_phone_and_it_slows_down_when_the_bot_keeps_failing(monkeypatch, tmp_path):
+    guard, started = _guard(monkeypatch, tmp_path)
+    port = _free_port()
+    monkeypatch.setattr(guard, "GUARD_PORT", port)
+    first = guard.hold(port)
+    try:
+        assert guard.hold(port) is None and guard.run(sleep=lambda s: None, rounds=3) == 0   # second guard exits
+        assert guard.spawn() is False and not started
+    finally:
+        first.close()
+    monkeypatch.setattr(guard, "check", lambda: "started")
+    naps = []
+    guard.run(sleep=naps.append, rounds=7)
+    assert naps == [guard.FIRST] + [guard.EVERY] * 4 + [guard.SLOW] * 3
+    assert "started it again (7)" in (tmp_path / "data" / "guard.log").read_text(encoding="utf-8")
+    assert guard.spawn() is True and started[-1][0][-1].endswith("guard.py")
+
+
+def test_bot_starts_the_guard_only_on_the_phone(monkeypatch):
+    import bot
+
+    spawned = []
+    monkeypatch.setattr(bot.subprocess, "Popen", lambda cmd, **kw: spawned.append(cmd))
+    monkeypatch.setenv("PREFIX", "/usr")
+    assert bot.ensure_guard() is False
+    monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")
+    monkeypatch.setenv("GUARD", "0")
+    assert bot.ensure_guard() is False and not spawned
+    monkeypatch.delenv("GUARD")
+    assert bot.ensure_guard() is True and spawned[-1][-1].endswith("guard.py")
+
+
+def test_installer_reports_an_early_crash_without_the_token(monkeypatch, tmp_path):
+    sys.path.insert(0, str(ROOT / "tools"))
+    import setup_wizard as w
+
+    (tmp_path / "data").mkdir()
+    monkeypatch.setattr(w, "LOG", tmp_path / "data" / "bot.log")
+    boot = tmp_path / "data" / "boot.log"
+    boot.write_text("old line\n", encoding="utf-8")
+
+    def crash():
+        with open(boot, "a", encoding="utf-8") as f:
+            f.write("Traceback: InvalidToken 1234567890:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsawXX\n")
+
+    ok, tail = w.wait_for_start(5, tick=crash)
+    assert not ok and "Traceback" in tail and "AAHdq" not in tail and "***" in tail and "old line" not in tail
+    assert w.mask_tokens("x 123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw y") == "x *** y"
